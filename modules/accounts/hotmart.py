@@ -51,7 +51,7 @@ class Hotmart(Account):
                 'password': self.password
             }
             response = self.session.post(self.LOGIN_URL, data=login_data)
-            print('[DEBUG] Chamada POST para login na Hotmart.', response.status_code, response.url, response.text)
+            print('[DEBUG] Chamada POST para login na Hotmart.', response.status_code, response.url, response.text.encode('utf-8'))
 
             if response.status_code != 200:
                 raise Exception(f'Erro ao acessar {response.url}: Status Code {response.status_code}')
