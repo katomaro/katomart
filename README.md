@@ -1,3 +1,8 @@
+# ATUALIZAÇÃO
+
+Este projeto NÃO morreu, este repositório NÃO FUNCIONA mais, peço que dirijam-se a https://katomart.com, este repositório permanecerá como arquivado sem receber mais nenhuma atualização e a source do programa agora é semi aberta.
+
+
 # Katomart©
 
 Este software está disponível para o público em versões anteriores, sponsors (membros pagantes), tem acesso à suporte, ferramentas extras, funcionalidades adicionais, e um monte de coisinhas boas.  
