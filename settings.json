@@ -1,0 +1,19 @@
+{
+    "download_path": "./downloads",
+    "video_quality": "1080p",
+    "max_concurrent_segment_downloads": 3,
+    "timeout_seconds": 30,
+    "download_subtitles": true,
+    "subtitle_language": "en",
+    "audio_language": "pt-BR",
+    "keep_audio_only": false,
+    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "hardcode_subtitles": false,
+    "run_ffmpeg": false,
+    "ffmpeg_args": "-c copy",
+    "download_embedded_videos": true,
+    "max_course_name_length": 10,
+    "max_module_name_length": 60,
+    "max_lesson_name_length": 60,
+    "max_file_name_length": 30
+}
