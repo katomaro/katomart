@@ -35,7 +35,7 @@ class HotmartPlatform(BasePlatform):
         if not self._session:
             raise ConnectionError("The session has not been authenticated.")
 
-        paid_response = self._session.get("https://api-hub.cb.hotmart.com/club-drive-api/rest/v1/purchase/?archived=UNARCHIVED")
+        paid_response = self._session.get("https://api-hub.cb.hotmart.com/club-drive-api/rest/v2/purchase/?archived=UNARCHIVED")
         free_response = self._session.get("https://api-hub.cb.hotmart.com/club-drive-api/rest/v1/purchase/free/?archived=UNARCHIVED")
         paid_response.raise_for_status()
         free_response.raise_for_status()
