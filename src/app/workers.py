@@ -2,6 +2,7 @@ import requests
 import json
 import logging
 import re
+import time
 from typing import Any, Dict, List
 from pathlib import Path
 
@@ -157,14 +158,42 @@ class DownloadWorker(QRunnable):
                         lesson_title_full = f"{lesson_order}. {lesson_title}"
                         lesson_path = module_path / lesson_title_full
                         lesson_path.mkdir(parents=True, exist_ok=True)
-                        try:
-                            self.signals.result.emit(f"    - Obtendo detalhes para a aula: {lesson_title}")
-                            lesson_details = self.platform.fetch_lesson_details(lesson, course_slug, course_id, module_id)
-
-                            logging.info(f"Aula '{lesson_title}' conteúdo: "
-                                            f"{len(lesson_details.videos)} vídeo(s), "
-                                            f"{len(lesson_details.attachments)} anexo(s).")
-                            
+                        
+                        # Configuração de retry
+                        max_retries = getattr(self.settings, 'max_retries', 3)
+                        retry_delay = getattr(self.settings, 'retry_delay_seconds', 2)
+                        lesson_details = None
+                        
+                        # Tentativas com retry
+                        for attempt in range(max_retries + 1):
+                            try:
+                                if attempt == 0:
+                                    self.signals.result.emit(f"    - Obtendo detalhes para a aula: {lesson_title}")
+                                else:
+                                    self.signals.result.emit(f"    - Tentativa {attempt + 1}/{max_retries + 1} para aula: {lesson_title}")
+                                    
+                                lesson_details = self.platform.fetch_lesson_details(lesson, course_slug, course_id, module_id)
+                                
+                                logging.info(f"Aula '{lesson_title}' conteúdo: "
+                                                f"{len(lesson_details.videos)} vídeo(s), "
+                                                f"{len(lesson_details.attachments)} anexo(s).")
+                                break  # Sucesso, sair do loop de retry
+                                
+                            except Exception as e:
+                                if attempt < max_retries:
+                                    logging.warning(f"Tentativa {attempt + 1} falhou para aula '{lesson_title}': {e}. Tentando novamente em {retry_delay}s...")
+                                    self.signals.result.emit(f"    - Erro na tentativa {attempt + 1}, tentando novamente em {retry_delay}s...")
+                                    time.sleep(retry_delay)
+                                    continue
+                                else:
+                                    # Última tentativa falhou
+                                    logging.error(f"Todas as {max_retries + 1} tentativas falharam para aula '{lesson_title}': {e}")
+                                    self.signals.result.emit(f"    - [ERROR] Falha após {max_retries + 1} tentativas em obter dados da aula: {lesson_title}")
+                                    lesson_details = None
+                                    break
+                        
+                        # Só processa se obteve os detalhes com sucesso
+                        if lesson_details is not None:
                             if lesson_details.description:
                                 if lesson_details.description.description_type in ("text", "markdown"):
                                     description_path = lesson_path / "Descrição.txt"
@@ -236,10 +265,6 @@ class DownloadWorker(QRunnable):
                                     for aux_index, aux in enumerate(lesson_details.auxiliary_urls, start=1):
                                         aux_file.write(f"{aux_index}. {aux}\n")
                                 self.signals.result.emit(f"      - URL auxiliar salva em {aux_path}")
-                            
-                        except Exception as e:
-                            logging.error(f"Failed to fetch details for lesson '{lesson_title}': {e}")
-                            self.signals.result.emit(f"    - [ERROR] Falha em obeter dados da aula: {lesson_title}")
                         
                         lessons_processed += 1
                         progress = int((lessons_processed / total_lessons) * 100) if total_lessons > 0 else 0
