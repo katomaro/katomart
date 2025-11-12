@@ -1,11 +1,29 @@
+from dataclasses import replace
+
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QFormLayout, QLineEdit, QSpinBox, 
-    QCheckBox, QPushButton, QComboBox
+    QWidget,
+    QVBoxLayout,
+    QFormLayout,
+    QLineEdit,
+    QSpinBox,
+    QCheckBox,
+    QPushButton,
+    QComboBox,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QMessageBox,
 )
-from src.config.settings_manager import SettingsManager, AppSettings
+
+from src.app.membership_service import MembershipService
+from src.config.settings_manager import AppSettings, SettingsManager
+
 
 class SettingsView(QWidget):
     """A widget to display and edit application settings."""
+
+    membership_updated = Signal()
 
     def __init__(self, settings_manager: SettingsManager, parent: QWidget | None = None) -> None:
         """Initializes the SettingsView."""
@@ -13,25 +31,56 @@ class SettingsView(QWidget):
         self._settings_manager = settings_manager
 
         layout = QVBoxLayout(self)
-        
-        self._setup_ui()
-        
+
+        membership_box = self._setup_ui()
+
         self.load_settings()
 
         save_button = QPushButton("Salvar Configurações")
         save_button.clicked.connect(self.save_settings)
-        
+
+        layout.addWidget(membership_box)
         layout.addLayout(self._form_layout)
         layout.addStretch()
         layout.addWidget(save_button)
         self.setLayout(layout)
 
-    def _setup_ui(self) -> None:
+    def _setup_ui(self) -> QGroupBox:
         """Creates and arranges the UI widgets for settings."""
         self._form_layout = QFormLayout()
-        
+
+        self._membership_group = QGroupBox("Autenticação do Software")
+        membership_layout = QFormLayout()
+
+        self.membership_email_edit = QLineEdit()
+        self.membership_password_edit = QLineEdit()
+        self.membership_password_edit.setEchoMode(QLineEdit.EchoMode.Password)
+
+        self.membership_status_label = QLabel()
+        self.membership_status_label.setStyleSheet("font-weight: 600;")
+        self.membership_allowed_label = QLabel()
+        self.membership_allowed_label.setWordWrap(True)
+        self.membership_allowed_label.setStyleSheet("color: #555555; font-size: 12px;")
+
+        button_row = QHBoxLayout()
+        self.membership_login_button = QPushButton("Entrar")
+        self.membership_login_button.clicked.connect(self._authenticate_membership)
+        self.membership_logout_button = QPushButton("Sair")
+        self.membership_logout_button.clicked.connect(self._clear_membership)
+        button_row.addWidget(self.membership_login_button)
+        button_row.addWidget(self.membership_logout_button)
+        button_row.addStretch()
+
+        membership_layout.addRow("E-mail:", self.membership_email_edit)
+        membership_layout.addRow("Senha:", self.membership_password_edit)
+        membership_layout.addRow(button_row)
+        membership_layout.addRow("Status:", self.membership_status_label)
+        membership_layout.addRow("Plataformas liberadas:", self.membership_allowed_label)
+
+        self._membership_group.setLayout(membership_layout)
+
         self.download_path_edit = QLineEdit()
-        
+
         self.video_quality_combo = QComboBox()
         self.video_qualities = ["Mais alta", "1080p", "720p", "480p", "Mais baixa"]
         self.video_quality_combo.addItems(self.video_qualities)
@@ -49,9 +98,15 @@ class SettingsView(QWidget):
         self.timeout_spin = QSpinBox()
         self.timeout_spin.setRange(10, 300)
         self.download_subtitles_check = QCheckBox("Baixar Legendas")
-        
+
         self.subtitle_lang_combo = QComboBox()
-        self.subtitle_languages = {"Português": "pt", "English": "en", "Español": "es", "Français": "fr", "Deutsch": "de"}
+        self.subtitle_languages = {
+            "Português": "pt",
+            "English": "en",
+            "Español": "es",
+            "Français": "fr",
+            "Deutsch": "de",
+        }
         for name, code in self.subtitle_languages.items():
             self.subtitle_lang_combo.addItem(name, userData=code)
 
@@ -60,13 +115,15 @@ class SettingsView(QWidget):
 
         self.audio_lang_combo = QComboBox()
         self.audio_languages = {
-            "Português (Brasil)": "pt-BR", "English": "en", "Español": "es"
+            "Português (Brasil)": "pt-BR",
+            "English": "en",
+            "Español": "es",
         }
         for name, code in self.audio_languages.items():
             self.audio_lang_combo.addItem(name, userData=code)
 
         self.keep_audio_only_check = QCheckBox("Manter Apenas Áudio")
-        
+
         self._form_layout.addRow("Caminho para Download:", self.download_path_edit)
         self._form_layout.addRow("Qualidade do Vídeo:", self.video_quality_combo)
         self._form_layout.addRow("Máximo de Downloads Concorrentes:", self.max_concurrent_downloads_spin)
@@ -82,23 +139,25 @@ class SettingsView(QWidget):
         self._form_layout.addRow("Idioma do Áudio (Em caso de múltiplos áudios):", self.audio_lang_combo)
         self._form_layout.addRow(self.keep_audio_only_check)
 
+        return self._membership_group
+
     def load_settings(self) -> None:
         """Loads settings from the manager and populates the UI."""
         settings = self._settings_manager.get_settings()
         self.download_path_edit.setText(settings.download_path)
-        
+
         index = self.video_quality_combo.findText(settings.video_quality)
         if index != -1:
             self.video_quality_combo.setCurrentIndex(index)
 
         self.max_concurrent_downloads_spin.setValue(settings.max_concurrent_segment_downloads)
         self.timeout_spin.setValue(settings.timeout_seconds)
-        self.course_name_max_spin.setValue(getattr(settings, 'max_course_name_length', 40))
-        self.module_name_max_spin.setValue(getattr(settings, 'max_module_name_length', 60))
-        self.lesson_name_max_spin.setValue(getattr(settings, 'max_lesson_name_length', 60))
-        self.file_name_max_spin.setValue(getattr(settings, 'max_file_name_length', 30))
+        self.course_name_max_spin.setValue(getattr(settings, "max_course_name_length", 40))
+        self.module_name_max_spin.setValue(getattr(settings, "max_module_name_length", 60))
+        self.lesson_name_max_spin.setValue(getattr(settings, "max_lesson_name_length", 60))
+        self.file_name_max_spin.setValue(getattr(settings, "max_file_name_length", 30))
         self.download_subtitles_check.setChecked(settings.download_subtitles)
-        
+
         index = self.subtitle_lang_combo.findData(settings.subtitle_language)
         if index != -1:
             self.subtitle_lang_combo.setCurrentIndex(index)
@@ -108,9 +167,18 @@ class SettingsView(QWidget):
         index = self.audio_lang_combo.findData(settings.audio_language)
         if index != -1:
             self.audio_lang_combo.setCurrentIndex(index)
-        
+
         self.keep_audio_only_check.setChecked(settings.keep_audio_only)
         self.download_embedded_check.setChecked(settings.download_embedded_videos)
+
+        self.membership_email_edit.setText(settings.membership_email)
+        self.membership_password_edit.clear()
+        self.membership_status_label.setText(
+            "Assinante" if settings.is_premium_member else "Gratuito"
+        )
+        allowed_text = ", ".join(settings.allowed_platforms) if settings.allowed_platforms else "Nenhuma"
+        self.membership_allowed_label.setText(allowed_text)
+        self.membership_logout_button.setEnabled(bool(settings.membership_token))
 
     def save_settings(self) -> None:
         """Saves the current UI settings back to the file."""
@@ -127,11 +195,64 @@ class SettingsView(QWidget):
             keep_audio_only=self.keep_audio_only_check.isChecked(),
             user_agent=current_settings.user_agent,
             run_ffmpeg=current_settings.run_ffmpeg,
-            ffmpeg_args=current_settings.ffmpeg_args
-            ,
+            ffmpeg_args=current_settings.ffmpeg_args,
             max_course_name_length=self.course_name_max_spin.value(),
             max_module_name_length=self.module_name_max_spin.value(),
             max_lesson_name_length=self.lesson_name_max_spin.value(),
-            max_file_name_length=self.file_name_max_spin.value()
+            max_file_name_length=self.file_name_max_spin.value(),
+            membership_api_url=current_settings.membership_api_url,
+            membership_email=current_settings.membership_email,
+            membership_token=current_settings.membership_token,
+            allowed_platforms=list(current_settings.allowed_platforms),
+            is_premium_member=current_settings.is_premium_member,
+            download_embedded_videos=self.download_embedded_check.isChecked(),
         )
         self._settings_manager.save_settings(updated_settings)
+
+    def _authenticate_membership(self) -> None:
+        """Authenticates the app user and stores the returned entitlements."""
+        email = self.membership_email_edit.text().strip()
+        password = self.membership_password_edit.text().strip()
+
+        if not email or not password:
+            QMessageBox.warning(self, "Dados incompletos", "Informe e-mail e senha para autenticar.")
+            return
+
+        settings = self._settings_manager.get_settings()
+        service = MembershipService(settings.membership_api_url, timeout=settings.timeout_seconds)
+
+        try:
+            membership_info = service.authenticate(email, password)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.critical(self, "Falha na autenticação", str(exc))
+            return
+
+        updated_settings = replace(
+            settings,
+            membership_email=email,
+            membership_token=membership_info.token,
+            allowed_platforms=membership_info.allowed_platforms,
+            is_premium_member=membership_info.is_premium,
+        )
+        self._settings_manager.save_settings(updated_settings)
+        self.load_settings()
+        self.membership_password_edit.clear()
+        self.membership_updated.emit()
+
+    def _clear_membership(self) -> None:
+        """Clears membership data from the settings."""
+        settings = self._settings_manager.get_settings()
+        if not settings.membership_token:
+            self.membership_password_edit.clear()
+            return
+
+        updated_settings = replace(
+            settings,
+            membership_token="",
+            allowed_platforms=[],
+            is_premium_member=False,
+        )
+        self._settings_manager.save_settings(updated_settings)
+        self.load_settings()
+        self.membership_password_edit.clear()
+        self.membership_updated.emit()

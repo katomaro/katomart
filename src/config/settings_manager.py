@@ -1,6 +1,8 @@
+from __future__ import annotations
+
 import json
 import logging
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, Dict
 
@@ -24,6 +26,11 @@ class AppSettings:
     max_module_name_length: int = 60
     max_lesson_name_length: int = 60
     max_file_name_length: int = 30
+    membership_api_url: str = "https://api.katomart.com"
+    membership_email: str = ""
+    membership_token: str = ""
+    allowed_platforms: list[str] = field(default_factory=list)
+    is_premium_member: bool = False
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "AppSettings":

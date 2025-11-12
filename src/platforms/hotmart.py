@@ -3,7 +3,7 @@ from pathlib import Path
 import requests
 import logging
 import json
-from src.platforms.base import BasePlatform, PlatformFactory
+from src.platforms.base import AuthField, AuthFieldType, BasePlatform, PlatformFactory
 from src.app.models import LessonContent, Description, AuxiliaryURL, Video, Attachment
 from src.config.settings_manager import SettingsManager
 from src.app.api_service import ApiService
@@ -13,12 +13,48 @@ class HotmartPlatform(BasePlatform):
     def __init__(self, api_service: ApiService, settings_manager: SettingsManager):
         super().__init__(api_service, settings_manager)
 
-    def authenticate(self, credentials: Dict[str, str]) -> None:
+    @classmethod
+    def auth_fields(cls) -> List[AuthField]:
+        return [
+            AuthField(
+                name="two_factor_code",
+                label="Código 2FA",
+                placeholder="Insira o código gerado no app ou e-mail",
+                requires_membership=True,
+                required=False,
+            )
+        ]
+
+    @classmethod
+    def auth_instructions(cls) -> str:
+        return """
+Como obter o token da Hotmart?:
+1) Abra o seu navegador e vá para https://consumer.hotmart.com.
+2) Abra as Ferramentas de Desenvolvedor (F12) → aba Rede (também pode ser chamada de Requisições ou Network).
+3) Faça o login normalmente sem fechar essa aba e aguarde aparecer a lista de produtos da conta.
+4) Use a lupa para procurar a URL "https://api-hub.cb.hotmart.com/club-drive-api/rest/v1/".
+5) Clique nessa requisição que tenha o indicativo GET e vá para a aba Headers (Cabeçalhos), em requisição lá em baixo.
+6) Copie o valor do cabeçalho 'Authorization' — ele se parece com 'Bearer <token>'. Cole apenas a parte do token aqui.
+
+Assinantes ativos também podem informar usuário/senha (e o código 2FA quando solicitado). O sistema irá trocar essas credenciais automaticamente pelo token da etapa acima.
+""".strip()
+
+    def authenticate(self, credentials: Dict[str, Any]) -> None:
         """Creates an authenticated session for the Hotmart API."""
-        token = credentials.get("token")
+        token = (credentials.get("token") or "").strip()
         if not token:
-            raise ValueError("Authentication token not provided.")
-        
+            username = (credentials.get("username") or "").strip()
+            password = (credentials.get("password") or "").strip()
+            if username and password:
+                two_factor = (credentials.get("two_factor_code") or "").strip()
+                token = self._exchange_credentials_for_token(username, password, two_factor)
+
+        if not token:
+            raise ValueError("Informe um token ou credenciais válidas para autenticação.")
+
+        self._configure_session(token)
+
+    def _configure_session(self, token: str) -> None:
         self._session = requests.Session()
         self._session.headers.update({
             "Authorization": f"Bearer {token}",
@@ -26,6 +62,29 @@ class HotmartPlatform(BasePlatform):
             "Origin": "https://consumer.hotmart.com",
             "Referer": "https://consumer.hotmart.com/",
         })
+
+    def _exchange_credentials_for_token(self, username: str, password: str, two_factor: str) -> str:
+        """Calls the membership API to exchange credentials for a Hotmart token."""
+        base_url = (self._settings.membership_api_url or "").rstrip("/")
+        if not base_url:
+            raise ValueError("Nenhum endpoint configurado para troca de credenciais pelo token.")
+
+        url = f"{base_url}/platforms/hotmart/token"
+        payload: Dict[str, Any] = {"username": username, "password": password}
+        if two_factor:
+            payload["twoFactorCode"] = two_factor
+
+        try:
+            response = requests.post(url, json=payload, timeout=self._settings.timeout_seconds)
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            raise ConnectionError("Falha ao solicitar token com usuário/senha.") from exc
+
+        data = response.json()
+        token = (data.get("token") or "").strip()
+        if not token:
+            raise ValueError("A API não retornou o token da plataforma Hotmart.")
+        return token
     
     def get_session(self) -> Optional[requests.Session]:
         return self._session
