@@ -1,12 +1,39 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
-from typing import List, Optional, Dict, Type, Any
+from dataclasses import dataclass
+from enum import Enum
+from typing import Any, Dict, List, Optional, Type
 from pathlib import Path
 from src.app.models import LessonContent, Attachment
 
 from src.app.api_service import ApiService
 from src.config.settings_manager import SettingsManager
 import requests
+
+class AuthFieldType(Enum):
+    """Supported input widget types for authentication fields."""
+
+    TEXT = "text"
+    PASSWORD = "password"
+    MULTILINE = "multiline"
+    KEY_VALUE_LIST = "key_value_list"
+
+
+@dataclass(frozen=True)
+class AuthField:
+    """Metadata that describes an authentication field required by a platform."""
+
+    name: str
+    label: str
+    field_type: AuthFieldType = AuthFieldType.TEXT
+    placeholder: str = ""
+    key_label: str = "Chave"
+    key_placeholder: str = ""
+    value_label: str = "Valor"
+    value_placeholder: str = ""
+    required: bool = True
+    requires_membership: bool = False
+
 
 class BasePlatform(ABC):
     """
@@ -19,7 +46,7 @@ class BasePlatform(ABC):
         self._session: Optional[requests.Session] = None
 
     @abstractmethod
-    def authenticate(self, credentials: Dict[str, str]) -> None:
+    def authenticate(self, credentials: Dict[str, Any]) -> None:
         """Authenticates on the platform and configures the session."""
         pass
 
@@ -42,6 +69,53 @@ class BasePlatform(ABC):
     def download_attachment(self, attachment: "Attachment", download_path: Path, course_slug: str, course_id: str, module_id: str) -> bool:
         """Downloads an attachment using platform-specific logic."""
         pass
+
+    @classmethod
+    def token_field(cls) -> AuthField:
+        """Returns the default optional token field."""
+        return AuthField(
+            name="token",
+            label="Token de Acesso",
+            field_type=AuthFieldType.PASSWORD,
+            placeholder="Cole aqui o token obtido na plataforma",
+            required=False,
+        )
+
+    @classmethod
+    def membership_fields(cls) -> List[AuthField]:
+        """Returns the default username/password fields for subscribers."""
+        return [
+            AuthField(
+                name="username",
+                label="Usuário / Email",
+                placeholder="Digite o usuário da plataforma",
+                requires_membership=True,
+            ),
+            AuthField(
+                name="password",
+                label="Senha",
+                field_type=AuthFieldType.PASSWORD,
+                placeholder="Digite a senha da plataforma",
+                requires_membership=True,
+            ),
+        ]
+
+    @classmethod
+    def auth_fields(cls) -> List[AuthField]:
+        """Platform-specific additional fields (e.g., 2FA or headers)."""
+        return []
+
+    @classmethod
+    def all_auth_fields(cls) -> List[AuthField]:
+        """Combines the default token/member fields with platform-specific ones."""
+        fields: List[AuthField] = [cls.token_field(), *cls.membership_fields()]
+        fields.extend(cls.auth_fields())
+        return fields
+
+    @classmethod
+    def auth_instructions(cls) -> str:
+        """Returns platform specific instructions for collecting credentials."""
+        return "Nenhuma instrução disponível para esta plataforma."
 
     def get_session(self) -> Optional[requests.Session]:
         """Returns the authenticated requests session."""
@@ -71,6 +145,11 @@ class PlatformFactory:
     def get_platform_names(cls) -> List[str]:
         """Returns a list of registered platform names."""
         return list(cls._platforms.keys())
+
+    @classmethod
+    def get_platform_class(cls, name: str) -> Optional[Type[BasePlatform]]:
+        """Returns the platform class for the provided name, if registered."""
+        return cls._platforms.get(name)
 
     @classmethod
     def create_platform(cls, name: str, settings_manager: SettingsManager) -> Optional[BasePlatform]:

@@ -35,7 +35,7 @@ class MainWindow(QMainWindow):
     def _setup_views(self) -> None:
         """Creates and adds all views to the stacked widget."""
         self.auth_tab_widget = QTabWidget()
-        self.auth_view = AuthView()
+        self.auth_view = AuthView(self._settings_manager)
         self.settings_view = SettingsView(self._settings_manager)
         self.auth_tab_widget.addTab(self.auth_view, "Authenticação")
         self.auth_tab_widget.addTab(self.settings_view, "Configurações")
@@ -54,6 +54,7 @@ class MainWindow(QMainWindow):
         self.auth_view.list_products_requested.connect(self._fetch_courses)
         self.course_selection_view.courses_selected.connect(self._fetch_modules)
         self.module_selection_view.download_requested.connect(self._start_download)
+        self.settings_view.membership_updated.connect(self.auth_view.refresh_membership_state)
 
     def _handle_worker_error(self, error_tuple: tuple) -> None:
         """Logs errors from worker threads."""
