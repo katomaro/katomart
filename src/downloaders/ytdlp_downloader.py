@@ -14,6 +14,7 @@ class YtdlpDownloader(BaseDownloader):
 
     def __init__(self, settings_manager: SettingsManager):
         super().__init__(settings_manager)
+        self.settings = self.settings_manager.get_settings()
 
     def download_video(self, url: str, session: requests.Session, download_path: Path) -> bool:
         """
@@ -30,6 +31,13 @@ class YtdlpDownloader(BaseDownloader):
         ydl_opts = {
             'outtmpl': str(download_path),
             'noplaylist': True,
+            'retries': 10,
+            'fragment_retries': 10,
+            'retry_sleep': {
+                'http': [1, 2, 4, 8],
+                'fragment': [1, 2, 4, 8],
+            },
+            'concurrent_fragment_downloads': max(1, self.settings.max_concurrent_segment_downloads),
         }
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:

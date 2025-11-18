@@ -5,6 +5,8 @@ from typing import List
 
 import requests
 
+from src.platforms.base import PlatformFactory
+
 
 @dataclass(frozen=True)
 class MembershipInfo:
@@ -13,6 +15,8 @@ class MembershipInfo:
     token: str
     allowed_platforms: List[str]
     is_premium: bool
+    permissions: List[str]
+    user_email: str
 
 
 class MembershipService:
@@ -27,22 +31,29 @@ class MembershipService:
         if not self._base_url:
             raise ValueError("Nenhum endpoint configurado para autenticação do software.")
 
-        url = f"{self._base_url}/auth/login"
+        url = f"{self._base_url}/api/permissions"
         payload = {"email": email, "password": password}
 
         response = requests.post(url, json=payload, timeout=self._timeout)
         response.raise_for_status()
 
         data = response.json()
-        token = (data.get("token") or "").strip()
-        if not token:
-            raise ValueError("A API não retornou um token de autenticação.")
+        permissions = data.get("permissions") or []
+        if not isinstance(permissions, list):
+            permissions = []
 
-        allowed = data.get("allowedPlatforms") or data.get("platforms") or []
-        if not isinstance(allowed, list):
-            allowed = []
+        user_info = data.get("user") or {}
+        user_email = str(user_info.get("email") or "").strip()
 
-        plan_label = str(data.get("plan") or data.get("membership") or "").lower()
-        is_premium = bool(data.get("isPremium")) or plan_label in {"premium", "paid", "pro"}
+        has_full_permission = "katomart.FULL" in permissions
+        allowed = PlatformFactory.get_platform_names() if has_full_permission else []
 
-        return MembershipInfo(token=token, allowed_platforms=allowed, is_premium=is_premium)
+        token = str(data.get("token") or "").strip()
+
+        return MembershipInfo(
+            token=token,
+            allowed_platforms=allowed,
+            is_premium=has_full_permission,
+            permissions=permissions,
+            user_email=user_email or email,
+        )
