@@ -36,21 +36,18 @@ class AstronmembersPlatform(BasePlatform):
     @classmethod
     def auth_instructions(cls) -> str:
         return """
-Informe a URL completa de login da sua plataforma Astronmembers (normalmente termina em /entrar) e as credenciais da conta.
+Informe a URL completa de login da sua plataforma Astronmembers (normalmente termina em /entrar).
+Sempre que possível, prefira colar o token de sessão no campo apropriado.
+Assinantes podem informar email e senha para que o token seja obtido automaticamente.
 O domínio costuma seguir o padrão *.astronmembers.com, mas instâncias customizadas também funcionam.
 """.strip()
 
     def authenticate(self, credentials: Dict[str, Any]) -> None:
         platform_url = (credentials.get("platform_url") or "").strip()
-        username = (credentials.get("username") or "").strip()
-        password = (credentials.get("password") or "").strip()
-
         if not platform_url:
             raise ValueError("Informe a URL de login da plataforma Astronmembers.")
         if not platform_url.startswith(("http://", "https://")):
             raise ValueError("A URL deve começar com http:// ou https://.")
-        if not username or not password:
-            raise ValueError("Usuário e senha são obrigatórios para Astronmembers.")
 
         self._platform_url = platform_url.rstrip("/")
         self._base_url = self._platform_url.rsplit("/", 1)[0]
@@ -63,6 +60,22 @@ O domínio costuma seguir o padrão *.astronmembers.com, mas instâncias customi
                 "Referer": self._platform_url,
             }
         )
+
+        token = (credentials.get("token") or "").strip()
+        if token:
+            session.headers["Cookie"] = token
+            self._session = session
+            logging.info("Sessão autenticada na Astronmembers via token.")
+            return
+
+        username = (credentials.get("username") or "").strip()
+        password = (credentials.get("password") or "").strip()
+        if not self._settings.has_full_permissions:
+            raise ValueError(
+                "Autenticação por usuário e senha está disponível apenas para assinantes. Forneça um token da plataforma."
+            )
+        if not username or not password:
+            raise ValueError("Usuário e senha são obrigatórios para Astronmembers.")
 
         session.get(self._platform_url)
 
