@@ -122,10 +122,11 @@ class CurseducaPlatform(BasePlatform):
     @classmethod
     def auth_instructions(cls) -> str:
         return """
+Assinantes (R$ 5.00) ativos podem informar usuário/senha. O sistema irá trocar essas credenciais automaticamente pelo token da etapa acima, além de usar alguns algoritmos melhores e ter funcionalidades extras na aplicação, e obter suporte prioritário.
+
 Para plataformas whitelabel Curseduca:
 1) Informe a URL base do portal (ex.: https://portal.geoone.com.br).
-2) Preencha usuário e senha do portal.
-3) Clique em "Listar Produtos"; os cursos disponíveis serão carregados automaticamente.
+2) Navegue até uma aula e (Instruções em construção, pelo momento, login apenas por credencial para assinantes).
 """.strip()
 
     def authenticate(self, credentials: Dict[str, Any]) -> None:

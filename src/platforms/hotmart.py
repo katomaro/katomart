@@ -97,15 +97,15 @@ class HotmartPlatform(BasePlatform):
     @classmethod
     def auth_instructions(cls) -> str:
         return """
-Como obter o token da Hotmart?:
+Assinantes (R$ 5.00) ativos podem informar usuário/senha. O sistema irá trocar essas credenciais automaticamente pelo token da etapa acima, além de usar alguns algoritmos melhores e ter funcionalidades extras na aplicação, e obter suporte prioritário.
+
+Para usuários gratuitos: Como obter o token da Hotmart?:
 1) Abra o seu navegador e vá para https://consumer.hotmart.com.
 2) Abra as Ferramentas de Desenvolvedor (F12) → aba Rede (também pode ser chamada de Requisições ou Network).
 3) Faça o login normalmente sem fechar essa aba e aguarde aparecer a lista de produtos da conta.
 4) Use a lupa para procurar a URL "https://api-hub.cb.hotmart.com/club-drive-api/rest/v1/".
 5) Clique nessa requisição que tenha o indicativo GET e vá para a aba Headers (Cabeçalhos), em requisição lá em baixo.
 6) Copie o valor do cabeçalho 'Authorization' — ele se parece com 'Bearer <token>'. Cole apenas a parte do token aqui.
-
-Assinantes ativos também podem informar usuário/senha. O sistema irá trocar essas credenciais automaticamente pelo token da etapa acima.
 """.strip()
 
     def authenticate(self, credentials: Dict[str, Any]) -> None:

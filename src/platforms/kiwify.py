@@ -34,12 +34,14 @@ class KiwifyPlatform(BasePlatform):
     @classmethod
     def auth_instructions(cls) -> str:
         return """
-Como obter o token da Kiwify?:
+Assinantes (R$ 5.00) ativos podem informar usuário/senha. O sistema irá trocar essas credenciais automaticamente pelo token da etapa acima, além de usar alguns algoritmos melhores e ter funcionalidades extras na aplicação, e obter suporte prioritário.
+
+Para usuários gratuitos: Como obter o token da Kiwify?:
 1) Acesse https://admin.kiwify.com.br em seu navegador e faça login normalmente.
 2) Abra o DevTools (F12) e vá para a aba Rede (Network).
 3) Recarregue a página e procure por requisições para "admin-api.kiwify.com".
 4) Abra uma requisição autenticada e copie o valor do cabeçalho Authorization (Bearer ...).
-5) Cole apenas o token acima no campo de token, ou informe usuário/senha se tiver permissão plena.
+5) Cole apenas o token acima no campo de token
 """.strip()
 
     def authenticate(self, credentials: Dict[str, Any]) -> None:

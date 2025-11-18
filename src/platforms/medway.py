@@ -30,7 +30,9 @@ class MedwayPlatform(BasePlatform):
     @classmethod
     def auth_instructions(cls) -> str:
         return """
-Como obter o token de acesso da Medway?:
+Assinantes (R$ 5.00) ativos podem informar usuário/senha. O sistema irá trocar essas credenciais automaticamente pelo token da etapa acima, além de usar alguns algoritmos melhores e ter funcionalidades extras na aplicação, e obter suporte prioritário.
+
+Para usuários Gratuitos: Como obter o token de acesso da Medway?:
 1) Acesse https://app.medway.com.br e faça login normalmente.
 2) Abra o DevTools (F12) e navegue até a aba Rede (Network).
 3) Recarregue a página e encontre uma requisição chamada "student_group".
