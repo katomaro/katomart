@@ -15,10 +15,5 @@
     "max_course_name_length": 10,
     "max_module_name_length": 60,
     "max_lesson_name_length": 60,
-    "max_file_name_length": 30,
-    "membership_api_url": "https://api.katomart.com",
-    "membership_email": "",
-    "membership_token": "",
-    "allowed_platforms": [],
-    "is_premium_member": false
+    "max_file_name_length": 30
 }

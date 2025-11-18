@@ -2,7 +2,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Dict, List, Optional, Type
+from typing import Any, Callable, Dict, List, Optional, Type
 from pathlib import Path
 from src.app.models import LessonContent, Attachment
 
@@ -44,6 +44,35 @@ class BasePlatform(ABC):
         self._api_service = api_service
         self._settings = settings_manager.get_settings()
         self._session: Optional[requests.Session] = None
+
+    def resolve_access_token(
+        self,
+        credentials: Dict[str, Any],
+        credential_token_provider: Callable[[str, str, Dict[str, Any]], str],
+    ) -> str:
+        """
+        Determines whether to authenticate via token or via credentials.
+
+        If the user has the katomart.FULL permission and both username and
+        password are present, the provided credential_token_provider will be
+        used to obtain the platform token. Otherwise, a filled token is used
+        directly. Raises an error when neither option is viable.
+        """
+
+        token = (credentials.get("token") or "").strip()
+        username = (credentials.get("username") or "").strip()
+        password = (credentials.get("password") or "").strip()
+
+        if self._settings.has_full_permissions and username and password:
+            return credential_token_provider(username, password, credentials)
+
+        if token:
+            return token
+
+        if self._settings.has_full_permissions and (username or password):
+            raise ValueError("Informe usuário e senha completos ou utilize um token de acesso.")
+
+        raise ValueError("Informe um token ou credenciais válidas para autenticação.")
 
     @abstractmethod
     def authenticate(self, credentials: Dict[str, Any]) -> None:

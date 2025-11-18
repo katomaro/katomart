@@ -3,27 +3,96 @@ from pathlib import Path
 import requests
 import logging
 import json
+import re
+
+from playwright.async_api import Page
+
 from src.platforms.base import AuthField, AuthFieldType, BasePlatform, PlatformFactory
+from src.platforms.playwright_token_fetcher import PlaywrightTokenFetcher
 from src.app.models import LessonContent, Description, AuxiliaryURL, Video, Attachment
 from src.config.settings_manager import SettingsManager
 from src.app.api_service import ApiService
+
+LOGIN_URL = (
+    "https://sso.hotmart.com/login?passwordless=false&service="
+    "https%3A%2F%2Fsso.hotmart.com%2Foauth2.0%2FcallbackAuthorize%3Fclient_id"
+    "%3D0fff6c2a-971c-4f7a-b0b3-3032b7a26319%26redirect_uri%3Dhttps%253A%252F"
+    "%252Fconsumer.hotmart.com%252Fauth%252Flogin%26response_type%3Dcode%26"
+    "response_mode%3Dquery%26client_name%3DCasOAuthClient"
+)
+
+TARGET_ENDPOINTS = [
+    "https://api-content-platform-space-gateway.cp.hotmart.com/rest/v2/users/me",
+    "https://api-display-gateway.dsp.hotmart.com/public/v1/payment/checkout/load-products",
+    "https://api-hub.cb.hotmart.com/club-drive-api/rest/v1/purchase/?archived=UNARCHIVED",
+    "https://api-content-platform-space-gateway.cp.hotmart.com/rest/v1/products/latest?sinceAt=48",
+    "https://api-content-search.dsp.hotmart.com/v2/product/hubRecommendation?size=16",
+    "https://api-hub.cb.hotmart.com/club-drive-api/rest/v1/purchase/free/?archived=UNARCHIVED",
+    "https://api-hub.cb.hotmart.com/club-drive-api/rest/v2/purchase/?archived=UNARCHIVED",
+]
+
+
+class HotmartTokenFetcher(PlaywrightTokenFetcher):
+    """Hotmart-specific Playwright automation to capture the bearer token."""
+
+    @property
+    def login_url(self) -> str:
+        return LOGIN_URL
+
+    @property
+    def target_endpoints(self) -> List[str]:
+        return TARGET_ENDPOINTS
+
+    async def dismiss_cookie_banner(self, page: Page) -> None:  # pragma: no cover - UI dependent
+        accept_all_button = page.locator("button.cookie-policy-button.cookie-policy-accept-all")
+
+        try:
+            if await accept_all_button.count():
+                await accept_all_button.first.click()
+                return
+        except Exception:
+            # Ignore banner failures and continue the login flow.
+            return
+
+        banner = page.locator("#hotmart-cookie-policy")
+
+        if not await banner.is_visible():
+            return
+
+        preferred_label = banner.get_by_role(
+            "button", name=re.compile("aceitar|accept|continuar", re.IGNORECASE)
+        )
+
+        try:
+            if await preferred_label.count():
+                await preferred_label.first.click()
+            else:
+                await banner.locator("button").first.click()
+        except Exception:
+            return
+
+    async def fill_credentials(self, page: Page, username: str, password: str) -> None:
+        await page.wait_for_selector("#username")
+        await page.click("#username")
+        await page.type("#username", username, delay=120)
+
+        await page.wait_for_selector("#password")
+        await page.click("#password")
+        await page.type("#password", password, delay=120)
+
+    async def submit_login(self, page: Page) -> None:
+        await page.click("#submit-button", force=True)
+
 
 class HotmartPlatform(BasePlatform):
     """Implements the specific scraping logic for Hotmart."""
     def __init__(self, api_service: ApiService, settings_manager: SettingsManager):
         super().__init__(api_service, settings_manager)
+        self._token_fetcher = HotmartTokenFetcher()
 
     @classmethod
     def auth_fields(cls) -> List[AuthField]:
-        return [
-            AuthField(
-                name="two_factor_code",
-                label="Código 2FA",
-                placeholder="Insira o código gerado no app ou e-mail",
-                requires_membership=True,
-                required=False,
-            )
-        ]
+        return []
 
     @classmethod
     def auth_instructions(cls) -> str:
@@ -36,22 +105,12 @@ Como obter o token da Hotmart?:
 5) Clique nessa requisição que tenha o indicativo GET e vá para a aba Headers (Cabeçalhos), em requisição lá em baixo.
 6) Copie o valor do cabeçalho 'Authorization' — ele se parece com 'Bearer <token>'. Cole apenas a parte do token aqui.
 
-Assinantes ativos também podem informar usuário/senha (e o código 2FA quando solicitado). O sistema irá trocar essas credenciais automaticamente pelo token da etapa acima.
+Assinantes ativos também podem informar usuário/senha. O sistema irá trocar essas credenciais automaticamente pelo token da etapa acima.
 """.strip()
 
     def authenticate(self, credentials: Dict[str, Any]) -> None:
         """Creates an authenticated session for the Hotmart API."""
-        token = (credentials.get("token") or "").strip()
-        if not token:
-            username = (credentials.get("username") or "").strip()
-            password = (credentials.get("password") or "").strip()
-            if username and password:
-                two_factor = (credentials.get("two_factor_code") or "").strip()
-                token = self._exchange_credentials_for_token(username, password, two_factor)
-
-        if not token:
-            raise ValueError("Informe um token ou credenciais válidas para autenticação.")
-
+        token = self.resolve_access_token(credentials, self._exchange_credentials_for_token)
         self._configure_session(token)
 
     def _configure_session(self, token: str) -> None:
@@ -63,28 +122,13 @@ Assinantes ativos também podem informar usuário/senha (e o código 2FA quando 
             "Referer": "https://consumer.hotmart.com/",
         })
 
-    def _exchange_credentials_for_token(self, username: str, password: str, two_factor: str) -> str:
-        """Calls the membership API to exchange credentials for a Hotmart token."""
-        base_url = (self._settings.membership_api_url or "").rstrip("/")
-        if not base_url:
-            raise ValueError("Nenhum endpoint configurado para troca de credenciais pelo token.")
-
-        url = f"{base_url}/platforms/hotmart/token"
-        payload: Dict[str, Any] = {"username": username, "password": password}
-        if two_factor:
-            payload["twoFactorCode"] = two_factor
+    def _exchange_credentials_for_token(self, username: str, password: str, credentials: Dict[str, Any]) -> str:
+        """Automates the Hotmart login flow to capture the bearer token."""
 
         try:
-            response = requests.post(url, json=payload, timeout=self._settings.timeout_seconds)
-            response.raise_for_status()
-        except requests.RequestException as exc:
-            raise ConnectionError("Falha ao solicitar token com usuário/senha.") from exc
-
-        data = response.json()
-        token = (data.get("token") or "").strip()
-        if not token:
-            raise ValueError("A API não retornou o token da plataforma Hotmart.")
-        return token
+            return self._token_fetcher.fetch_token(username, password)
+        except Exception as exc:
+            raise ConnectionError("Falha ao obter o token via Playwright. Revise usuário/senha.") from exc
     
     def get_session(self) -> Optional[requests.Session]:
         return self._session
