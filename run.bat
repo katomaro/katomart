@@ -29,6 +29,11 @@ if exist "%~dp0requirements.txt" (
     if ERRORLEVEL 1 (
         echo Aviso: pip retornou erro durante a instalacao das dependencias, verirfique no grupo do telegram @GatosDodois.
     )
+    echo Instalando o navegador Chromium pelo Playwright
+    python -m playwright install chromium
+    if ERRORLEVEL 1 (
+        echo Aviso: houve um problema ao instalar o Chromium via Playwright.
+    )
 ) else (
     echo Arquivo requirements.txt nao encontrado. Pulando instalacao.
 )
