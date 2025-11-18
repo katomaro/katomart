@@ -216,7 +216,6 @@ class SettingsView(QWidget):
             max_module_name_length=self.module_name_max_spin.value(),
             max_lesson_name_length=self.lesson_name_max_spin.value(),
             max_file_name_length=self.file_name_max_spin.value(),
-            membership_api_url=current_settings.membership_api_url,
             membership_email=current_settings.membership_email,
             membership_token=current_settings.membership_token,
             allowed_platforms=list(current_settings.allowed_platforms),
@@ -237,7 +236,7 @@ class SettingsView(QWidget):
             return
 
         settings = self._settings_manager.get_settings()
-        service = MembershipService(settings.membership_api_url, timeout=settings.timeout_seconds)
+        service = MembershipService(timeout=settings.timeout_seconds)
 
         try:
             membership_info = service.authenticate(email, password)

@@ -4,6 +4,7 @@ import requests
 import logging
 import json
 from src.platforms.base import AuthField, AuthFieldType, BasePlatform, PlatformFactory
+from src.app.membership_service import MEMBERSHIP_BASE_URL
 from src.app.models import LessonContent, Description, AuxiliaryURL, Video, Attachment
 from src.config.settings_manager import SettingsManager
 from src.app.api_service import ApiService
@@ -65,10 +66,7 @@ Assinantes ativos também podem informar usuário/senha (e o código 2FA quando 
 
     def _exchange_credentials_for_token(self, username: str, password: str, two_factor: str) -> str:
         """Calls the membership API to exchange credentials for a Hotmart token."""
-        base_url = (self._settings.membership_api_url or "").rstrip("/")
-        if not base_url:
-            raise ValueError("Nenhum endpoint configurado para troca de credenciais pelo token.")
-
+        base_url = MEMBERSHIP_BASE_URL.rstrip("/")
         url = f"{base_url}/platforms/hotmart/token"
         payload: Dict[str, Any] = {"username": username, "password": password}
         if two_factor:
