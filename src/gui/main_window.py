@@ -31,7 +31,7 @@ class MainWindow(QMainWindow):
 
         self._setup_views()
         self._connect_signals()
-        QTimer.singleShot(0, self._show_subscription_prompt)
+        # QTimer.singleShot(0, self._show_subscription_prompt)
 
     def _setup_views(self) -> None:
         """Creates and adds all views to the stacked widget."""
@@ -53,10 +53,11 @@ class MainWindow(QMainWindow):
     def _show_subscription_prompt(self) -> None:
         """Displays a pop-up encouraging the monthly subscription."""
         message = (
-            "Simplifique o uso do Katomart e desbloqueie recursos extras com uma assinatura "
-            "mensal de apenas R$5.\n\nVisite https://katomaro.com e conhe\u00e7a os benefícios."
+            "Manter um Software desse nível \u00e9 um trabalho duro e custoso, que exige muito tempo e estudo, além de acessos legítimos em plataformas. "
+            "Com uma assinatura mensal de apenas R$5, você pode ajudar a manter o Katomar! ativo e em constante melhoria, além de desbloquear funções extras e poderosas.\n\n"
+            "Visite https://katomaro.com/assinaturas e conhe\u00e7a os benefícios."
         )
-        QMessageBox.information(self, "Assinatura Premium", message)
+        QMessageBox.information(self, "Suporte o Katomart!", message)
 
     def _connect_signals(self) -> None:
         """Connects signals between views and workers."""
