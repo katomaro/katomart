@@ -8,6 +8,9 @@ import requests
 from src.platforms.base import PlatformFactory
 
 
+MEMBERSHIP_BASE_URL = "https://katomaro.com"
+
+
 @dataclass(frozen=True)
 class MembershipInfo:
     """Represents the response from the membership authentication API."""
@@ -22,8 +25,8 @@ class MembershipInfo:
 class MembershipService:
     """Client to authenticate the user with the Katomart membership backend."""
 
-    def __init__(self, base_url: str, timeout: int = 15) -> None:
-        self._base_url = (base_url or "").rstrip("/")
+    def __init__(self, timeout: int = 15) -> None:
+        self._base_url = MEMBERSHIP_BASE_URL.rstrip("/")
         self._timeout = timeout
 
     def authenticate(self, email: str, password: str) -> MembershipInfo:

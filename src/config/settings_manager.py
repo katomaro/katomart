@@ -28,7 +28,6 @@ class AppSettings:
     max_file_name_length: int = 30
     permissions: list[str] = field(default_factory=list)
     has_full_permissions: bool = False
-    membership_api_url: str = "https://api.katomart.com"
     membership_email: str = ""
     membership_token: str = ""
     allowed_platforms: list[str] = field(default_factory=list)
@@ -81,9 +80,21 @@ class SettingsManager:
             True if saving was successful, False otherwise.
         """
         self._settings = settings
+        persisted_data = asdict(self._settings)
+
+        sensitive_keys = {
+            "membership_token",
+            "allowed_platforms",
+            "is_premium_member",
+            "permissions",
+            "has_full_permissions",
+        }
+        for key in sensitive_keys:
+            persisted_data.pop(key, None)
+
         try:
             with open(self._settings_path, "w", encoding="utf-8") as f:
-                json.dump(asdict(self._settings), f, indent=4)
+                json.dump(persisted_data, f, indent=4)
             return True
         except IOError as e:
             logging.error(f"Failed to save settings to {self._settings_path}: {e}")
