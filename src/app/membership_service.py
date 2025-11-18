@@ -8,6 +8,15 @@ import requests
 from src.platforms.base import PlatformFactory
 
 
+
+PEDIDO = """
+Se você está lendo essa mensagem, você muito provavelmente está vendo uma forma de burlar o acesso a alguma funcionalidade paga.
+Entendo que nem todo mundo pode pagar, mas eu mantenho esse software desde 2021 e é um trabalho extenso.
+Tem quem cobra assinaturas de 300 reais por mes para uma unica plataforma, eu mantenho tudo em código aberto e dou suporte ativo ao pessoal.
+Não tem nada que vai te impedir de essencialmente crackear, se fosse meu propósito eu teria usado minha licença do pyarmor.
+Considere dar alguma forma de apoio, e no mínimo, não compartilhe versão desbloqueada. Obrigado."""
+
+
 MEMBERSHIP_BASE_URL = "https://katomaro.com"
 
 
