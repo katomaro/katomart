@@ -1,6 +1,6 @@
 import json
-from PySide6.QtCore import QThreadPool
-from PySide6.QtWidgets import QMainWindow, QWidget, QStackedWidget, QTabWidget
+from PySide6.QtCore import QThreadPool, QTimer
+from PySide6.QtWidgets import QMainWindow, QWidget, QStackedWidget, QTabWidget, QMessageBox
 import logging
 
 from src.config.settings_manager import SettingsManager
@@ -31,6 +31,7 @@ class MainWindow(QMainWindow):
 
         self._setup_views()
         self._connect_signals()
+        QTimer.singleShot(0, self._show_subscription_prompt)
 
     def _setup_views(self) -> None:
         """Creates and adds all views to the stacked widget."""
@@ -48,6 +49,14 @@ class MainWindow(QMainWindow):
         self._stacked_widget.addWidget(self.course_selection_view)
         self._stacked_widget.addWidget(self.module_selection_view)
         self._stacked_widget.addWidget(self.progress_view)
+
+    def _show_subscription_prompt(self) -> None:
+        """Displays a pop-up encouraging the monthly subscription."""
+        message = (
+            "Simplifique o uso do Katomart e desbloqueie recursos extras com uma assinatura "
+            "mensal de apenas R$5.\n\nVisite https://katomaro.com e conhe\u00e7a os benefícios."
+        )
+        QMessageBox.information(self, "Assinatura Premium", message)
 
     def _connect_signals(self) -> None:
         """Connects signals between views and workers."""
