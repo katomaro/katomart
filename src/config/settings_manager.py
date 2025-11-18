@@ -26,6 +26,8 @@ class AppSettings:
     max_module_name_length: int = 60
     max_lesson_name_length: int = 60
     max_file_name_length: int = 30
+    permissions: list[str] = field(default_factory=list)
+    has_full_permissions: bool = False
     membership_api_url: str = "https://api.katomart.com"
     membership_email: str = ""
     membership_token: str = ""

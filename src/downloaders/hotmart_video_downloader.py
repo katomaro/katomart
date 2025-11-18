@@ -119,6 +119,13 @@ class HotmartDownloader(BaseDownloader):
                 'http_headers': {header: value for header, value in session.headers.items()},
                 'quiet': True,
                 'no_warnings': True,
+                'retries': 10,
+                'fragment_retries': 10,
+                'retry_sleep': {
+                    'http': [1, 2, 4, 8],
+                    'fragment': [1, 2, 4, 8],
+                },
+                'concurrent_fragment_downloads': max(1, self.settings.max_concurrent_segment_downloads),
             }
 
             if self.settings.keep_audio_only:

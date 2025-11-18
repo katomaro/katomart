@@ -32,7 +32,7 @@ class SettingsView(QWidget):
 
         layout = QVBoxLayout(self)
 
-        membership_box = self._setup_ui()
+        membership_box, general_group, paid_group = self._setup_ui()
 
         self.load_settings()
 
@@ -40,14 +40,16 @@ class SettingsView(QWidget):
         save_button.clicked.connect(self.save_settings)
 
         layout.addWidget(membership_box)
-        layout.addLayout(self._form_layout)
+        layout.addWidget(general_group)
+        layout.addWidget(paid_group)
         layout.addStretch()
         layout.addWidget(save_button)
         self.setLayout(layout)
 
-    def _setup_ui(self) -> QGroupBox:
+    def _setup_ui(self) -> tuple[QGroupBox, QGroupBox, QGroupBox]:
         """Creates and arranges the UI widgets for settings."""
         self._form_layout = QFormLayout()
+        self._paid_form_layout = QFormLayout()
 
         self._membership_group = QGroupBox("Autenticação do Software")
         membership_layout = QFormLayout()
@@ -123,10 +125,8 @@ class SettingsView(QWidget):
             self.audio_lang_combo.addItem(name, userData=code)
 
         self.keep_audio_only_check = QCheckBox("Manter Apenas Áudio")
-
         self._form_layout.addRow("Caminho para Download:", self.download_path_edit)
         self._form_layout.addRow("Qualidade do Vídeo:", self.video_quality_combo)
-        self._form_layout.addRow("Máximo de Downloads Concorrentes:", self.max_concurrent_downloads_spin)
         self._form_layout.addRow("Tamanho máximo do nome do Curso:", self.course_name_max_spin)
         self._form_layout.addRow("Tamanho máximo do nome do Módulo:", self.module_name_max_spin)
         self._form_layout.addRow("Tamanho máximo do nome da Aula:", self.lesson_name_max_spin)
@@ -139,7 +139,19 @@ class SettingsView(QWidget):
         self._form_layout.addRow("Idioma do Áudio (Em caso de múltiplos áudios):", self.audio_lang_combo)
         self._form_layout.addRow(self.keep_audio_only_check)
 
-        return self._membership_group
+        general_group = QGroupBox("Configurações Gerais")
+        general_group.setLayout(self._form_layout)
+
+        self.paid_status_label = QLabel()
+        self.paid_status_label.setStyleSheet("color: #a94442; font-size: 12px;")
+
+        self._paid_form_layout.addRow("Máximo de Downloads Concorrentes:", self.max_concurrent_downloads_spin)
+        self._paid_form_layout.addRow(self.paid_status_label)
+
+        paid_group = QGroupBox("Configurações Pagas")
+        paid_group.setLayout(self._paid_form_layout)
+
+        return self._membership_group, general_group, paid_group
 
     def load_settings(self) -> None:
         """Loads settings from the manager and populates the UI."""
@@ -150,7 +162,6 @@ class SettingsView(QWidget):
         if index != -1:
             self.video_quality_combo.setCurrentIndex(index)
 
-        self.max_concurrent_downloads_spin.setValue(settings.max_concurrent_segment_downloads)
         self.timeout_spin.setValue(settings.timeout_seconds)
         self.course_name_max_spin.setValue(getattr(settings, "max_course_name_length", 40))
         self.module_name_max_spin.setValue(getattr(settings, "max_module_name_length", 60))
@@ -178,7 +189,12 @@ class SettingsView(QWidget):
         )
         allowed_text = ", ".join(settings.allowed_platforms) if settings.allowed_platforms else "Nenhuma"
         self.membership_allowed_label.setText(allowed_text)
-        self.membership_logout_button.setEnabled(bool(settings.membership_token))
+        self.membership_logout_button.setEnabled(
+            bool(settings.membership_token) or settings.has_full_permissions
+        )
+
+        self.max_concurrent_downloads_spin.setValue(settings.max_concurrent_segment_downloads)
+        self._update_paid_settings_state(settings)
 
     def save_settings(self) -> None:
         """Saves the current UI settings back to the file."""
@@ -206,6 +222,8 @@ class SettingsView(QWidget):
             allowed_platforms=list(current_settings.allowed_platforms),
             is_premium_member=current_settings.is_premium_member,
             download_embedded_videos=self.download_embedded_check.isChecked(),
+            permissions=list(current_settings.permissions),
+            has_full_permissions=current_settings.has_full_permissions,
         )
         self._settings_manager.save_settings(updated_settings)
 
@@ -233,6 +251,8 @@ class SettingsView(QWidget):
             membership_token=membership_info.token,
             allowed_platforms=membership_info.allowed_platforms,
             is_premium_member=membership_info.is_premium,
+            permissions=membership_info.permissions,
+            has_full_permissions=membership_info.is_premium,
         )
         self._settings_manager.save_settings(updated_settings)
         self.load_settings()
@@ -242,7 +262,7 @@ class SettingsView(QWidget):
     def _clear_membership(self) -> None:
         """Clears membership data from the settings."""
         settings = self._settings_manager.get_settings()
-        if not settings.membership_token:
+        if not settings.membership_token and not settings.has_full_permissions:
             self.membership_password_edit.clear()
             return
 
@@ -251,8 +271,23 @@ class SettingsView(QWidget):
             membership_token="",
             allowed_platforms=[],
             is_premium_member=False,
+            permissions=[],
+            has_full_permissions=False,
         )
         self._settings_manager.save_settings(updated_settings)
         self.load_settings()
         self.membership_password_edit.clear()
         self.membership_updated.emit()
+
+    def _update_paid_settings_state(self, settings: AppSettings) -> None:
+        """Enables or disables paid settings based on permissions."""
+        if settings.has_full_permissions:
+            self.paid_status_label.setText("Permissão katomart.FULL detectada. Opções liberadas.")
+            self.paid_status_label.setStyleSheet("color: #3c763d; font-weight: 600;")
+        else:
+            self.paid_status_label.setText(
+                "Faça login para liberar configurações pagas como concorrência de segmentos."
+            )
+            self.paid_status_label.setStyleSheet("color: #a94442; font-size: 12px;")
+
+        self._paid_form_layout.parentWidget().setEnabled(settings.has_full_permissions)
