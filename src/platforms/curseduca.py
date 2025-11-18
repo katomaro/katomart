@@ -122,7 +122,7 @@ class CurseducaPlatform(BasePlatform):
     @classmethod
     def auth_instructions(cls) -> str:
         return """
-Assinantes (R$ 5.00) ativos podem informar usuário/senha. O sistema irá trocar essas credenciais automaticamente pelo token da etapa acima, além de usar alguns algoritmos melhores e ter funcionalidades extras na aplicação, e obter suporte prioritário.
+Assinantes (R$ 5.00) ativos podem informar usuário/senha. O sistema irá trocar essas credenciais automaticamente pelo token da etapa acima, além de usar alguns algoritmos melhores e ter funcionalidades extras na aplicação, e obter suporte prioritário. Usuários sem assinatura devem colar diretamente o token de sessão.
 
 Para plataformas whitelabel Curseduca:
 1) Informe a URL base do portal (ex.: https://portal.geoone.com.br).
@@ -131,20 +131,12 @@ Para plataformas whitelabel Curseduca:
 
     def authenticate(self, credentials: Dict[str, Any]) -> None:
         base_url = (credentials.get("base_url") or "").rstrip("/")
-        username = (credentials.get("username") or "").strip()
-        password = (credentials.get("password") or "").strip()
-
         if not base_url:
             raise ValueError("Informe a URL base da plataforma Curseduca.")
-        if not username or not password:
-            raise ValueError("Usuário e senha são obrigatórios para Curseduca.")
 
         self._base_url = base_url
         self._session = requests.Session()
         self._session.headers.update({"User-Agent": self._settings.user_agent})
-
-        login_page = self._session.get(f"{base_url}/login")
-        login_page.raise_for_status()
 
         headers = {
             "User-Agent": self._settings.user_agent,
@@ -160,6 +152,29 @@ Para plataformas whitelabel Curseduca:
             raise ValueError("Não foi possível obter a chave da plataforma.")
 
         self._api_key = api_key
+
+        token = (credentials.get("token") or "").strip()
+        if token:
+            self._access_token = token
+            self._tenant_slug = (credentials.get("tenant_slug") or "").strip()
+            self._tenant_uuid = (credentials.get("tenant_uuid") or "").strip()
+            self._tenant_id = str(credentials.get("tenant_id") or "")
+            self._current_login_id = (credentials.get("current_login_id") or "").strip()
+            self._configure_cookies(base_url)
+            logging.info("Sessão autenticada na Curseduca via token.")
+            return
+
+        username = (credentials.get("username") or "").strip()
+        password = (credentials.get("password") or "").strip()
+        if not self._settings.has_full_permissions:
+            raise ValueError(
+                "Login com usuário e senha está disponível apenas para assinantes. Forneça um token válido da plataforma."
+            )
+        if not username or not password:
+            raise ValueError("Usuário e senha são obrigatórios para Curseduca.")
+
+        login_page = self._session.get(f"{base_url}/login")
+        login_page.raise_for_status()
 
         auth_headers = headers | {"api_key": api_key, "Content-Type": "application/json"}
         login_response = self._session.post(
