@@ -31,7 +31,7 @@ class MainWindow(QMainWindow):
 
         self._setup_views()
         self._connect_signals()
-        # QTimer.singleShot(0, self._show_subscription_prompt)
+        QTimer.singleShot(0, self._show_subscription_prompt)
 
     def _setup_views(self) -> None:
         """Creates and adds all views to the stacked widget."""
