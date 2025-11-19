@@ -87,8 +87,6 @@ class SettingsView(QWidget):
         self.video_qualities = ["Mais alta", "1080p", "720p", "480p", "Mais baixa"]
         self.video_quality_combo.addItems(self.video_qualities)
 
-        self.max_concurrent_downloads_spin = QSpinBox()
-        self.max_concurrent_downloads_spin.setRange(1, 16)
         self.course_name_max_spin = QSpinBox()
         self.course_name_max_spin.setRange(10, 200)
         self.module_name_max_spin = QSpinBox()
@@ -145,7 +143,48 @@ class SettingsView(QWidget):
         self.paid_status_label = QLabel()
         self.paid_status_label.setStyleSheet("color: #a94442; font-size: 12px;")
 
-        self._paid_form_layout.addRow("Máximo de Downloads Concorrentes:", self.max_concurrent_downloads_spin)
+        self.user_agent_edit = QLineEdit()
+
+        self.max_concurrent_downloads_spin = QSpinBox()
+        self.max_concurrent_downloads_spin.setRange(1, 16)
+
+        self.retry_attempts_spin = QSpinBox()
+        self.retry_attempts_spin.setRange(0, 10)
+
+        self.retry_delay_spin = QSpinBox()
+        self.retry_delay_spin.setRange(0, 600)
+
+        self.download_widevine_check = QCheckBox("Baixar Widevine")
+
+        self.cdm_path_edit = QLineEdit()
+
+        self.use_http_proxy_check = QCheckBox("Usar Proxy HTTP")
+
+        self.proxy_address_edit = QLineEdit()
+        self.proxy_username_edit = QLineEdit()
+        self.proxy_password_edit = QLineEdit()
+        self.proxy_password_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.proxy_port_spin = QSpinBox()
+        self.proxy_port_spin.setRange(0, 65535)
+
+        self.use_http_proxy_check.toggled.connect(self._update_proxy_fields_state)
+        self._update_proxy_fields_state(False)
+
+        self._paid_form_layout.addRow("User Agent:", self.user_agent_edit)
+        self._paid_form_layout.addRow(
+            "Máximo de Downloads Concorrentes:", self.max_concurrent_downloads_spin
+        )
+        self._paid_form_layout.addRow(
+            "Quantidade de Retentativas de download:", self.retry_attempts_spin
+        )
+        self._paid_form_layout.addRow("Delay para Retentativas (s):", self.retry_delay_spin)
+        self._paid_form_layout.addRow(self.download_widevine_check)
+        self._paid_form_layout.addRow("Caminho da CDM:", self.cdm_path_edit)
+        self._paid_form_layout.addRow(self.use_http_proxy_check)
+        self._paid_form_layout.addRow("Endereço do Proxy:", self.proxy_address_edit)
+        self._paid_form_layout.addRow("Nome de usuário do Proxy:", self.proxy_username_edit)
+        self._paid_form_layout.addRow("Senha do Proxy:", self.proxy_password_edit)
+        self._paid_form_layout.addRow("Porta do Proxy:", self.proxy_port_spin)
         self._paid_form_layout.addRow(self.paid_status_label)
 
         paid_group = QGroupBox("Configurações Pagas")
@@ -193,7 +232,18 @@ class SettingsView(QWidget):
             bool(settings.membership_token) or settings.has_full_permissions
         )
 
+        self.user_agent_edit.setText(settings.user_agent)
         self.max_concurrent_downloads_spin.setValue(settings.max_concurrent_segment_downloads)
+        self.retry_attempts_spin.setValue(settings.download_retry_attempts)
+        self.retry_delay_spin.setValue(settings.download_retry_delay_seconds)
+        self.download_widevine_check.setChecked(settings.download_widevine)
+        self.cdm_path_edit.setText(settings.cdm_path)
+        self.use_http_proxy_check.setChecked(settings.use_http_proxy)
+        self.proxy_address_edit.setText(settings.proxy_address)
+        self.proxy_username_edit.setText(settings.proxy_username)
+        self.proxy_password_edit.setText(settings.proxy_password)
+        self.proxy_port_spin.setValue(settings.proxy_port)
+        self._update_proxy_fields_state(settings.use_http_proxy)
         self._update_paid_settings_state(settings)
 
     def save_settings(self) -> None:
@@ -209,7 +259,16 @@ class SettingsView(QWidget):
             hardcode_subtitles=self.hardcode_subtitles_check.isChecked(),
             audio_language=self.audio_lang_combo.currentData(),
             keep_audio_only=self.keep_audio_only_check.isChecked(),
-            user_agent=current_settings.user_agent,
+            user_agent=self.user_agent_edit.text().strip(),
+            download_retry_attempts=self.retry_attempts_spin.value(),
+            download_retry_delay_seconds=self.retry_delay_spin.value(),
+            download_widevine=self.download_widevine_check.isChecked(),
+            cdm_path=self.cdm_path_edit.text().strip(),
+            use_http_proxy=self.use_http_proxy_check.isChecked(),
+            proxy_address=self.proxy_address_edit.text().strip(),
+            proxy_username=self.proxy_username_edit.text().strip(),
+            proxy_password=self.proxy_password_edit.text(),
+            proxy_port=self.proxy_port_spin.value(),
             run_ffmpeg=current_settings.run_ffmpeg,
             ffmpeg_args=current_settings.ffmpeg_args,
             max_course_name_length=self.course_name_max_spin.value(),
@@ -290,3 +349,16 @@ class SettingsView(QWidget):
             self.paid_status_label.setStyleSheet("color: #a94442; font-size: 12px;")
 
         self._paid_form_layout.parentWidget().setEnabled(settings.has_full_permissions)
+
+    def _update_proxy_fields_state(self, enabled: bool | None = None) -> None:
+        """Enables or disables proxy detail inputs."""
+        if enabled is None:
+            enabled = self.use_http_proxy_check.isChecked()
+
+        for widget in (
+            self.proxy_address_edit,
+            self.proxy_username_edit,
+            self.proxy_password_edit,
+            self.proxy_port_spin,
+        ):
+            widget.setEnabled(bool(enabled))
