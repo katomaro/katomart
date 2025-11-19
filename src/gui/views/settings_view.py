@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMessageBox,
+    QScrollArea,
 )
 
 from src.app.membership_service import MembershipService
@@ -32,17 +33,27 @@ class SettingsView(QWidget):
 
         layout = QVBoxLayout(self)
 
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+
+        scroll_content = QWidget()
+        scroll_layout = QVBoxLayout(scroll_content)
+
         membership_box, general_group, paid_group = self._setup_ui()
+
+        scroll_layout.addWidget(membership_box)
+        scroll_layout.addWidget(general_group)
+        scroll_layout.addWidget(paid_group)
+        scroll_layout.addStretch()
+
+        scroll_area.setWidget(scroll_content)
 
         self.load_settings()
 
         save_button = QPushButton("Salvar Configurações")
         save_button.clicked.connect(self.save_settings)
 
-        layout.addWidget(membership_box)
-        layout.addWidget(general_group)
-        layout.addWidget(paid_group)
-        layout.addStretch()
+        layout.addWidget(scroll_area)
         layout.addWidget(save_button)
         self.setLayout(layout)
 
