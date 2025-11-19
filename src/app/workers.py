@@ -2,6 +2,7 @@ import requests
 import json
 import logging
 import re
+import time
 from typing import Any, Dict, List
 from pathlib import Path
 
@@ -105,6 +106,47 @@ class DownloadWorker(QRunnable):
         self.download_dir = Path(download_dir)
         self.settings_manager = settings_manager
         self.settings = self.settings_manager.get_settings()
+        self._retry_attempts = max(0, getattr(self.settings, "download_retry_attempts", 0))
+        self._retry_delay_seconds = max(0, getattr(self.settings, "download_retry_delay_seconds", 0))
+
+    def _run_with_retries(self, func, description: str, treat_false_as_failure: bool = True):
+        """Execute ``func`` with the configured retry policy.
+
+        Args:
+            func: Callable to execute.
+            description: Human friendly label for logging.
+            treat_false_as_failure: When True, a ``False`` return value triggers
+                a retry.
+
+        Returns:
+            The function result when successful.
+
+        Raises:
+            Exception: Propagates the last error after exhausting retries.
+        """
+
+        total_attempts = self._retry_attempts + 1
+        for attempt in range(total_attempts):
+            try:
+                result = func()
+                if treat_false_as_failure and result is False:
+                    raise RuntimeError(f"{description} retornou status de falha.")
+                return result
+            except Exception as exc:  # pragma: no cover - operational retry logic
+                is_last_attempt = attempt >= self._retry_attempts
+                if is_last_attempt:
+                    logging.error(
+                        f"{description} falhou após {self._retry_attempts} retentativas: {exc}",
+                        exc_info=True,
+                    )
+                    raise
+
+                next_attempt = attempt + 2
+                logging.warning(
+                    f"{description} falhou (tentativa {next_attempt} de {total_attempts}). "
+                    f"Nova tentativa em {self._retry_delay_seconds}s. Erro: {exc}"
+                )
+                time.sleep(self._retry_delay_seconds)
 
     def run(self) -> None:
         """
@@ -159,7 +201,13 @@ class DownloadWorker(QRunnable):
                         lesson_path.mkdir(parents=True, exist_ok=True)
                         try:
                             self.signals.result.emit(f"    - Obtendo detalhes para a aula: {lesson_title}")
-                            lesson_details = self.platform.fetch_lesson_details(lesson, course_slug, course_id, module_id)
+                            lesson_details = self._run_with_retries(
+                                lambda: self.platform.fetch_lesson_details(
+                                    lesson, course_slug, course_id, module_id
+                                ),
+                                description=f"Obter dados da aula '{lesson_title}'",
+                                treat_false_as_failure=False,
+                            )
 
                             logging.info(f"Aula '{lesson_title}' conteúdo: "
                                             f"{len(lesson_details.videos)} vídeo(s), "
@@ -200,14 +248,21 @@ class DownloadWorker(QRunnable):
                                             logging.info(f"Baixando vídeo linkado '{emb_url}' para '{emb_path}'")
                                             downloader = YtdlpDownloader(self.settings_manager)
                                             try:
-                                                success = downloader.download_video(emb_url, self.platform.get_session(), emb_path)
-                                                if success:
-                                                    self.signals.result.emit(f"    - Vídeo linkado baixado: {emb_name}")
-                                                else:
-                                                    self.signals.result.emit(f"    - [ERROR] Falha ao baixar vídeo linkado: {emb_url}")
+                                                self._run_with_retries(
+                                                    lambda: downloader.download_video(
+                                                        emb_url, self.platform.get_session(), emb_path
+                                                    ),
+                                                    description=f"Download do vídeo linkado '{emb_name}'",
+                                                )
+                                                self.signals.result.emit(f"    - Vídeo linkado baixado: {emb_name}")
                                             except Exception as e:
-                                                logging.error(f"Erro ao baixar vídeo linkado {emb_url}: {e}", exc_info=True)
-                                                self.signals.result.emit(f"    - [ERROR] Falha ao baixar vídeo linkado: {emb_url}")
+                                                logging.error(
+                                                    f"Erro ao baixar vídeo linkado {emb_url}: {e}",
+                                                    exc_info=True,
+                                                )
+                                                self.signals.result.emit(
+                                                    f"    - [ERROR] Falha ao baixar vídeo linkado: {emb_url}"
+                                                )
                                 self.signals.result.emit(f"      - Descrição salva em {description_path}")
 
                             for video_index, video in enumerate(lesson_details.videos, start=1):
@@ -217,8 +272,18 @@ class DownloadWorker(QRunnable):
                                 video_path = lesson_path / video_name
                                 logging.info(f"Baixando Vídeo '{video_name}' para '{video_path}'")
                                 downloader = DownloaderFactory.get_downloader(video.url, self.settings_manager)
-                                downloader.download_video(video.url, self.platform.get_session(), video_path)
-                                self.signals.result.emit(f"    - Vídeo baixado: {video_name}")
+                                try:
+                                    self._run_with_retries(
+                                        lambda: downloader.download_video(
+                                            video.url, self.platform.get_session(), video_path
+                                        ),
+                                        description=f"Download do vídeo '{video_name}'",
+                                    )
+                                    self.signals.result.emit(f"    - Vídeo baixado: {video_name}")
+                                except Exception:
+                                    self.signals.result.emit(
+                                        f"    - [ERROR] Falha ao baixar vídeo: {video_name}"
+                                    )
 
                             for attachment_index, attachment in enumerate(lesson_details.attachments, start=1):
                                 attachment_order = attachment.order or attachment_index
@@ -227,8 +292,18 @@ class DownloadWorker(QRunnable):
                                 full_attachment_name = truncate_filename_preserve_ext(full_attachment_name, getattr(self.settings, 'max_file_name_length', 30))
                                 attachment_path = lesson_path / full_attachment_name
                                 logging.info(f"Baixando Anexo '{attachment.filename}' para '{attachment_path}'")
-                                self.platform.download_attachment(attachment, attachment_path, course_slug, course_id, module_id)
-                                self.signals.result.emit(f"    - Anexo baixado: {attachment.filename}")
+                                try:
+                                    self._run_with_retries(
+                                        lambda: self.platform.download_attachment(
+                                            attachment, attachment_path, course_slug, course_id, module_id
+                                        ),
+                                        description=f"Download do anexo '{attachment.filename}'",
+                                    )
+                                    self.signals.result.emit(f"    - Anexo baixado: {attachment.filename}")
+                                except Exception:
+                                    self.signals.result.emit(
+                                        f"    - [ERROR] Falha ao baixar anexo: {attachment.filename}"
+                                    )
                             
                             if lesson_details.auxiliary_urls:
                                 aux_path = lesson_path / f"Links Extras.txt"
