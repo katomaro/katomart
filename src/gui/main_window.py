@@ -4,6 +4,7 @@ from PySide6.QtWidgets import QMainWindow, QWidget, QStackedWidget, QTabWidget, 
 import logging
 
 from src.config.settings_manager import SettingsManager
+from src.config.version import BUILD_NUMBER, VERSION_FILE_URL
 from src.gui.views.auth_view import AuthView
 from src.gui.views.course_selection_view import CourseSelectionView
 from src.gui.views.module_selection_view import ModuleSelectionView
@@ -11,6 +12,7 @@ from src.gui.views.progress_view import ProgressView
 from src.gui.views.settings_view import SettingsView
 from src.platforms.base import PlatformFactory, BasePlatform
 from src.app.workers import FetchCoursesWorker, FetchModulesWorker, DownloadWorker
+from src.app.version_checker import VersionCheckWorker
 
 class MainWindow(QMainWindow):
     """Main application window that holds all UI views."""
@@ -32,6 +34,7 @@ class MainWindow(QMainWindow):
         self._setup_views()
         self._connect_signals()
         QTimer.singleShot(0, self._show_subscription_prompt)
+        QTimer.singleShot(0, self._start_version_check)
 
     def _setup_views(self) -> None:
         """Creates and adds all views to the stacked widget."""
@@ -65,6 +68,32 @@ class MainWindow(QMainWindow):
         self.course_selection_view.courses_selected.connect(self._fetch_modules)
         self.module_selection_view.download_requested.connect(self._start_download)
         self.settings_view.membership_updated.connect(self.auth_view.refresh_membership_state)
+
+    def _start_version_check(self) -> None:
+        """Starts an asynchronous check for the latest build on GitHub."""
+        worker = VersionCheckWorker(VERSION_FILE_URL)
+        worker.signals.success.connect(self._handle_remote_build)
+        worker.signals.failure.connect(self._handle_version_check_failure)
+        self._thread_pool.start(worker)
+
+    def _handle_remote_build(self, remote_build: int) -> None:
+        """Compares remote and local builds and informs the user if outdated."""
+        if remote_build != BUILD_NUMBER:
+            message = (
+                "Uma nova atualização está disponível no GitHub. "
+                "Baixe a versão mais recente em https://github.com/katomaro/katomart."
+            )
+            QMessageBox.information(self, "Atualização disponível", message)
+
+    def _handle_version_check_failure(self, error_message: str) -> None:
+        """Notifies the user when the version check could not be completed."""
+        logging.warning("Falha ao verificar atualização: %s", error_message)
+        message = (
+            "Não foi possível verificar atualizações porque o GitHub pode estar inacessível. "
+            "As atualizações automáticas não puderam ser verificadas; verifique manualmente o repositório em "
+            "https://github.com/katomaro/katomart."
+        )
+        QMessageBox.warning(self, "Verificação de atualização indisponível", message)
 
     def _handle_worker_error(self, error_tuple: tuple) -> None:
         """Logs errors from worker threads."""
