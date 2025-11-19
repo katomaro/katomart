@@ -68,12 +68,11 @@ class SettingsManager:
             if self._settings_path.exists():
                 with open(self._settings_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    settings = AppSettings.from_dict(data)
-                    return self._apply_paid_defaults(settings)
+                    return AppSettings.from_dict(data)
         except (IOError, json.JSONDecodeError) as e:
             logging.error(f"Failed to load settings from {self._settings_path}: {e}")
 
-        return self._apply_paid_defaults(AppSettings())
+        return AppSettings()
 
     def _apply_paid_defaults(self, settings: AppSettings) -> AppSettings:
         """Ensure paid-only values fall back to defaults for free users."""
@@ -96,9 +95,25 @@ class SettingsManager:
         }
         return replace(settings, **paid_only_fields)
 
-    def get_settings(self) -> AppSettings:
-        """Returns the current application settings."""
-        return self._settings
+    def get_settings(self, include_premium: bool = False) -> AppSettings:
+        """Returns the current application settings.
+
+        Args:
+            include_premium: When True, returns the cached settings without
+                applying paid defaults even if the user lacks permissions.
+        """
+        # Return sanitized settings for non-premium users while preserving cached
+        # premium values for future premium sessions. The `include_premium` flag
+        # allows callers (e.g., during login) to fetch the cached values so they
+        # can be restored when premium access is granted again.
+        if include_premium:
+            return self._settings
+
+        return (
+            self._settings
+            if self._settings.has_full_permissions
+            else self._apply_paid_defaults(self._settings)
+        )
 
     def save_settings(self, settings: AppSettings) -> bool:
         """
@@ -110,8 +125,35 @@ class SettingsManager:
         Returns:
             True if saving was successful, False otherwise.
         """
-        self._settings = settings
-        persisted_data = asdict(self._settings)
+        # Preserve premium-only values from cache when saving in a free session
+        # so they can be restored on a future premium login.
+        if settings.has_full_permissions:
+            merged_settings = settings
+        else:
+            default = AppSettings()
+            premium_fields = {
+                "user_agent",
+                "max_concurrent_segment_downloads",
+                "download_retry_attempts",
+                "download_retry_delay_seconds",
+                "download_widevine",
+                "cdm_path",
+                "use_http_proxy",
+                "proxy_address",
+                "proxy_username",
+                "proxy_password",
+                "proxy_port",
+            }
+
+            cached_premium_values = {
+                field: getattr(self._settings, field, getattr(default, field))
+                for field in premium_fields
+            }
+
+            merged_settings = replace(settings, **cached_premium_values)
+
+        self._settings = merged_settings
+        persisted_data = asdict(merged_settings)
 
         sensitive_keys = {
             "membership_token",
