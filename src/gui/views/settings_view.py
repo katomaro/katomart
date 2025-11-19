@@ -294,7 +294,7 @@ class SettingsView(QWidget):
             QMessageBox.warning(self, "Dados incompletos", "Informe e-mail e senha para autenticar.")
             return
 
-        settings = self._settings_manager.get_settings()
+        settings = self._settings_manager.get_settings(include_premium=True)
         service = MembershipService(timeout=settings.timeout_seconds)
 
         try:
