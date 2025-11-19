@@ -5,6 +5,7 @@ import requests
 import yt_dlp
 from .base import BaseDownloader
 from src.config.settings_manager import SettingsManager
+from src.utils.retry import build_ytdlp_retry_config
 
 
 class YtdlpDownloader(BaseDownloader):
@@ -28,16 +29,12 @@ class YtdlpDownloader(BaseDownloader):
         Returns:
             bool: True if the download was successful, False otherwise.
         """
+        retry_opts = build_ytdlp_retry_config(self.settings)
         ydl_opts = {
             'outtmpl': str(download_path),
             'noplaylist': True,
-            'retries': 10,
-            'fragment_retries': 10,
-            'retry_sleep': {
-                'http': [1, 2, 4, 8],
-                'fragment': [1, 2, 4, 8],
-            },
             'concurrent_fragment_downloads': max(1, self.settings.max_concurrent_segment_downloads),
+            **retry_opts,
         }
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:

@@ -9,6 +9,7 @@ from bs4 import BeautifulSoup
 
 from .base import BaseDownloader
 from src.config.settings_manager import AppSettings, SettingsManager
+from src.utils.retry import build_ytdlp_retry_config
 
 
 class HotmartDownloader(BaseDownloader):
@@ -113,19 +114,15 @@ class HotmartDownloader(BaseDownloader):
 
             logging.debug(f"Selected video asset with quality {video_asset.get('height')}p. URL: {m3u8_url}")
 
+            retry_opts = build_ytdlp_retry_config(self.settings)
             ydl_opts = {
                 'outtmpl': str(download_path) + ".%(ext)s",
                 'noplaylist': True,
                 'http_headers': {header: value for header, value in session.headers.items()},
                 'quiet': True,
                 'no_warnings': True,
-                'retries': 10,
-                'fragment_retries': 10,
-                'retry_sleep': {
-                    'http': [1, 2, 4, 8],
-                    'fragment': [1, 2, 4, 8],
-                },
                 'concurrent_fragment_downloads': max(1, self.settings.max_concurrent_segment_downloads),
+                **retry_opts,
             }
 
             if self.settings.keep_audio_only:
