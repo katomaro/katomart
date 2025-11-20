@@ -31,6 +31,10 @@ class AppSettings:
     run_ffmpeg: bool = False
     ffmpeg_args: str = "-c copy"
     download_embedded_videos: bool = True
+    use_whisper_transcription: bool = False
+    whisper_model: str = "base"
+    whisper_language: str = "auto"
+    whisper_output_format: str = "srt"
     max_course_name_length: int = 40
     max_module_name_length: int = 60
     max_lesson_name_length: int = 60
@@ -92,6 +96,10 @@ class SettingsManager:
             "proxy_username": default.proxy_username,
             "proxy_password": default.proxy_password,
             "proxy_port": default.proxy_port,
+            "use_whisper_transcription": default.use_whisper_transcription,
+            "whisper_model": default.whisper_model,
+            "whisper_language": default.whisper_language,
+            "whisper_output_format": default.whisper_output_format,
         }
         return replace(settings, **paid_only_fields)
 
@@ -143,6 +151,10 @@ class SettingsManager:
                 "proxy_username",
                 "proxy_password",
                 "proxy_port",
+                "use_whisper_transcription",
+                "whisper_model",
+                "whisper_language",
+                "whisper_output_format",
             }
 
             cached_premium_values = {

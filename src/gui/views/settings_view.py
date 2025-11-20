@@ -236,8 +236,63 @@ class SettingsView(QWidget):
         self.proxy_port_spin = QSpinBox()
         self.proxy_port_spin.setRange(0, 65535)
 
+        self.use_whisper_transcription_check = QCheckBox(
+            "Usar Whisper para transcrever os vídeos baixados (requer ffmpeg)"
+        )
+        self.whisper_model_combo = QComboBox()
+        self.whisper_models = [
+            "tiny",
+            "base",
+            "small",
+            "medium",
+            "large",
+            "large-v2",
+            "large-v3",
+        ]
+        self.whisper_model_combo.addItems(self.whisper_models)
+
+        self.whisper_language_combo = QComboBox()
+        self.whisper_languages = {
+            "Detectar automaticamente": "auto",
+            "English": "en",
+            "Español": "es",
+            "Português": "pt",
+            "Português (Brasil)": "pt-BR",
+            "Français": "fr",
+            "Deutsch": "de",
+            "Italiano": "it",
+            "العربية": "ar",
+            "Русский": "ru",
+            "हिन्दी": "hi",
+            "বাংলা": "bn",
+            "اردو": "ur",
+            "Türkçe": "tr",
+            "Bahasa Indonesia": "id",
+            "Bahasa Melayu": "ms",
+            "日本語": "ja",
+            "한국어": "ko",
+            "中文 (简体)": "zh-CN",
+            "中文 (繁體)": "zh-TW",
+        }
+        for name, code in self.whisper_languages.items():
+            self.whisper_language_combo.addItem(name, userData=code)
+
+        self.whisper_output_format_combo = QComboBox()
+        self.whisper_output_formats = {
+            "Texto (.txt)": "txt",
+            "Subrip (.srt)": "srt",
+            "WebVTT (.vtt)": "vtt",
+            "JSON (.json)": "json",
+        }
+        for name, code in self.whisper_output_formats.items():
+            self.whisper_output_format_combo.addItem(name, userData=code)
+
         self.use_http_proxy_check.toggled.connect(self._update_proxy_fields_state)
         self._update_proxy_fields_state(False)
+        self.use_whisper_transcription_check.toggled.connect(
+            self._update_whisper_fields_state
+        )
+        self._update_whisper_fields_state(False)
 
         self._paid_form_layout.addRow("User Agent:", self.user_agent_edit)
         self._paid_form_layout.addRow(
@@ -254,6 +309,12 @@ class SettingsView(QWidget):
         self._paid_form_layout.addRow("Nome de usuário do Proxy:", self.proxy_username_edit)
         self._paid_form_layout.addRow("Senha do Proxy:", self.proxy_password_edit)
         self._paid_form_layout.addRow("Porta do Proxy:", self.proxy_port_spin)
+        self._paid_form_layout.addRow(self.use_whisper_transcription_check)
+        self._paid_form_layout.addRow("Modelo do Whisper:", self.whisper_model_combo)
+        self._paid_form_layout.addRow("Idioma do Whisper:", self.whisper_language_combo)
+        self._paid_form_layout.addRow(
+            "Formato da Transcrição:", self.whisper_output_format_combo
+        )
         self._paid_form_layout.addRow(self.paid_status_label)
 
         paid_group = QGroupBox("Configurações Pagas")
@@ -313,6 +374,23 @@ class SettingsView(QWidget):
         self.proxy_password_edit.setText(settings.proxy_password)
         self.proxy_port_spin.setValue(settings.proxy_port)
         self._update_proxy_fields_state(settings.use_http_proxy)
+        self.use_whisper_transcription_check.setChecked(settings.use_whisper_transcription)
+
+        model_index = self.whisper_model_combo.findText(settings.whisper_model)
+        if model_index != -1:
+            self.whisper_model_combo.setCurrentIndex(model_index)
+
+        language_index = self.whisper_language_combo.findData(settings.whisper_language)
+        if language_index != -1:
+            self.whisper_language_combo.setCurrentIndex(language_index)
+
+        output_format_index = self.whisper_output_format_combo.findData(
+            settings.whisper_output_format
+        )
+        if output_format_index != -1:
+            self.whisper_output_format_combo.setCurrentIndex(output_format_index)
+
+        self._update_whisper_fields_state(settings.use_whisper_transcription)
         self._update_paid_settings_state(settings)
 
     def save_settings(self) -> None:
@@ -338,6 +416,10 @@ class SettingsView(QWidget):
             proxy_username=self.proxy_username_edit.text().strip(),
             proxy_password=self.proxy_password_edit.text(),
             proxy_port=self.proxy_port_spin.value(),
+            use_whisper_transcription=self.use_whisper_transcription_check.isChecked(),
+            whisper_model=self.whisper_model_combo.currentText(),
+            whisper_language=self.whisper_language_combo.currentData(),
+            whisper_output_format=self.whisper_output_format_combo.currentData(),
             run_ffmpeg=current_settings.run_ffmpeg,
             ffmpeg_args=current_settings.ffmpeg_args,
             max_course_name_length=self.course_name_max_spin.value(),
@@ -429,5 +511,17 @@ class SettingsView(QWidget):
             self.proxy_username_edit,
             self.proxy_password_edit,
             self.proxy_port_spin,
+        ):
+            widget.setEnabled(bool(enabled))
+
+    def _update_whisper_fields_state(self, enabled: bool | None = None) -> None:
+        """Enables or disables Whisper-related inputs."""
+        if enabled is None:
+            enabled = self.use_whisper_transcription_check.isChecked()
+
+        for widget in (
+            self.whisper_model_combo,
+            self.whisper_language_combo,
+            self.whisper_output_format_combo,
         ):
             widget.setEnabled(bool(enabled))
