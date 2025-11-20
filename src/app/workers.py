@@ -1,11 +1,12 @@
-import requests
 import json
 import logging
 import re
+import subprocess
 import time
-from typing import Any, Dict, List
 from pathlib import Path
+from typing import Any, Dict, List, Optional
 
+import requests
 from PySide6.QtCore import QObject, QRunnable, Signal
 
 from src.platforms.base import BasePlatform
@@ -108,6 +109,7 @@ class DownloadWorker(QRunnable):
         self.settings = self.settings_manager.get_settings()
         self._retry_attempts = max(0, getattr(self.settings, "download_retry_attempts", 0))
         self._retry_delay_seconds = max(0, getattr(self.settings, "download_retry_delay_seconds", 0))
+        self._whisper_model = None
 
     def _run_with_retries(self, func, description: str, treat_false_as_failure: bool = True):
         """Execute ``func`` with the configured retry policy.
@@ -147,6 +149,114 @@ class DownloadWorker(QRunnable):
                     f"Nova tentativa em {self._retry_delay_seconds}s. Erro: {exc}"
                 )
                 time.sleep(self._retry_delay_seconds)
+
+    def _find_downloaded_media(self, expected_path: Path) -> Optional[Path]:
+        """Resolve the actual path of a downloaded media file.
+
+        Some downloaders (like yt-dlp) may append extensions automatically. This
+        helper first checks the exact expected path and then looks for files
+        sharing the same stem within the same directory.
+        """
+
+        if expected_path.exists():
+            return expected_path
+
+        candidates = sorted(
+            expected_path.parent.glob(expected_path.name + ".*"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+
+        return candidates[0] if candidates else None
+
+    def _extract_audio_from_video(self, media_path: Path) -> Path:
+        """Use ffmpeg to extract audio from a media file and return the audio path."""
+
+        audio_path = media_path.with_suffix(".wav")
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(media_path),
+            "-vn",
+            "-acodec",
+            "pcm_s16le",
+            "-ar",
+            "16000",
+            str(audio_path),
+        ]
+
+        logging.info(f"Extraindo áudio com ffmpeg: {' '.join(cmd)}")
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+        return audio_path
+
+    def _load_whisper_model(self):
+        if self._whisper_model is None:
+            import whisper
+
+            self._whisper_model = whisper.load_model(self.settings.whisper_model)
+        return self._whisper_model
+
+    def _transcribe_audio(self, audio_path: Path) -> Optional[Path]:
+        """Generate a transcription for the provided audio file using Whisper."""
+
+        from whisper.utils import get_writer
+
+        model = self._load_whisper_model()
+        language = None if self.settings.whisper_language == "auto" else self.settings.whisper_language
+        result = model.transcribe(str(audio_path), language=language)
+
+        output_format = self.settings.whisper_output_format or "srt"
+        writer = get_writer(output_format, str(audio_path.parent))
+        writer_opts = {"language": language} if language else {}
+        writer(result, audio_path.stem, writer_opts)
+
+        generated = audio_path.parent / f"{audio_path.stem}.{output_format}"
+        return generated if generated.exists() else None
+
+    def _maybe_transcribe_video(self, expected_media_path: Path) -> None:
+        """Extract audio and transcribe a video when Whisper is enabled."""
+
+        if not self.settings.use_whisper_transcription:
+            return
+
+        media_path = self._find_downloaded_media(expected_media_path)
+        if not media_path:
+            logging.warning(
+                f"Não foi possível localizar o arquivo de mídia para transcrição: {expected_media_path}"
+            )
+            return
+
+        try:
+            audio_path = self._extract_audio_from_video(media_path)
+            transcription_path = self._transcribe_audio(audio_path)
+
+            if transcription_path:
+                self.signals.result.emit(
+                    f"      - Transcrição gerada com Whisper: {transcription_path.name}"
+                )
+            else:
+                self.signals.result.emit(
+                    "      - [WARNING] Whisper não gerou arquivo de transcrição."
+                )
+        except FileNotFoundError:
+            logging.error("ffmpeg não encontrado. Certifique-se de que está instalado e no PATH.")
+            self.signals.result.emit(
+                "      - [ERROR] ffmpeg não encontrado para transcrição com Whisper."
+            )
+        except subprocess.CalledProcessError as exc:
+            logging.error(f"Falha ao extrair áudio para Whisper: {exc}")
+            self.signals.result.emit(
+                "      - [ERROR] Falha ao extrair áudio para transcrição com Whisper."
+            )
+        except Exception as exc:
+            logging.error(
+                f"Erro inesperado durante transcrição com Whisper: {exc}",
+                exc_info=True,
+            )
+            self.signals.result.emit(
+                "      - [ERROR] Falha inesperada durante a transcrição com Whisper."
+            )
 
     def run(self) -> None:
         """
@@ -255,6 +365,7 @@ class DownloadWorker(QRunnable):
                                                     description=f"Download do vídeo linkado '{emb_name}'",
                                                 )
                                                 self.signals.result.emit(f"    - Vídeo linkado baixado: {emb_name}")
+                                                self._maybe_transcribe_video(emb_path)
                                             except Exception as e:
                                                 logging.error(
                                                     f"Erro ao baixar vídeo linkado {emb_url}: {e}",
@@ -280,6 +391,7 @@ class DownloadWorker(QRunnable):
                                         description=f"Download do vídeo '{video_name}'",
                                     )
                                     self.signals.result.emit(f"    - Vídeo baixado: {video_name}")
+                                    self._maybe_transcribe_video(video_path)
                                 except Exception:
                                     self.signals.result.emit(
                                         f"    - [ERROR] Falha ao baixar vídeo: {video_name}"
