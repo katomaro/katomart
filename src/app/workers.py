@@ -274,7 +274,6 @@ class DownloadWorker(QRunnable):
             for course_id, course_data in self.selection.items():
                 course_slug = course_data.get("slug")
                 course_title = course_data.get("name", f"Curso-{course_id}")
-                course_title = course_title.rsplit("] ", 1)[1]
                 course_title = sanitize_path_component(course_title)
                 course_title = truncate_component(course_title, getattr(self.settings, 'max_course_name_length', 40))
                 course_path = self.download_dir / course_title

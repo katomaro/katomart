@@ -143,23 +143,23 @@ Para usuários gratuitos: Como obter o token da Hotmart?:
         paid_response.raise_for_status()
         free_response.raise_for_status()
 
-        paid_list = self._extract_course_data(paid_response.json(), "[PAGO] ")
-        free_list = self._extract_course_data(free_response.json(), "[GRATIS] ")
+        paid_list = self._extract_course_data(paid_response.json())
+        free_list = self._extract_course_data(free_response.json())
 
         combined = {course["id"]: course for course in paid_list + free_list}
         return sorted(list(combined.values()), key=lambda c: c["id"])
 
-    def _extract_course_data(self, response_json: Dict[str, Any], prefix: str) -> List[Dict[str, Any]]:
+    def _extract_course_data(self, response_json: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Extracts and formats course data from the API response."""
         courses = []
         for item in response_json.get("data", []):
             product = item.get("product", {})
             if not product:
                 continue
-            
+
             course_data = {
                 "id": product.get("id"),
-                "name": f'{prefix}{product.get("name", "Unnamed")}',
+                "name": product.get("name", "Unnamed"),
                 "seller_name": product.get("seller", {}).get("name"),
                 "slug": product.get("hotmartClub", {}).get("slug")
             }
