@@ -13,6 +13,7 @@ from src.platforms.base import BasePlatform
 from src.config.settings_manager import SettingsManager
 from src.downloaders.factory import DownloaderFactory
 from src.downloaders.ytdlp_downloader import YtdlpDownloader
+from src.utils.resume_manager import ResumeManager
 
 from src.utils.filesystem import sanitize_path_component
 from src.utils.filesystem import truncate_component, truncate_filename_preserve_ext
@@ -99,10 +100,19 @@ class DownloadWorker(QRunnable):
     Worker to download files for the selected modules and lessons.
     """
 
-    def __init__(self, platform: BasePlatform, selection: Dict[str, Any], download_dir: str, settings_manager: SettingsManager):
+    def __init__(
+        self,
+        platform: BasePlatform,
+        selection: Dict[str, Any],
+        download_dir: str,
+        settings_manager: SettingsManager,
+        platform_name: str,
+        selected_courses: list | None = None,
+        resume_state: Dict[str, Any] | None = None,
+    ):
         super().__init__()
         self.platform = platform
-        self.selection = selection
+        self.selection = resume_state.get("selection", selection) if resume_state else selection
         self.signals = WorkerSignals()
         self.download_dir = Path(download_dir)
         self.settings_manager = settings_manager
@@ -110,6 +120,18 @@ class DownloadWorker(QRunnable):
         self._retry_attempts = max(0, getattr(self.settings, "download_retry_attempts", 0))
         self._retry_delay_seconds = max(0, getattr(self.settings, "download_retry_delay_seconds", 0))
         self._whisper_model = None
+        self.platform_name = platform_name
+        self.selected_courses = selected_courses or []
+        self.resume_manager: ResumeManager | None = None
+        self.resume_state: Dict[str, Any] | None = None
+
+        if getattr(self.settings, "create_resume_summary", False):
+            self.resume_manager = ResumeManager(self.download_dir)
+            self.resume_state = resume_state
+            if self.resume_manager and self.resume_state:
+                self.resume_state.setdefault("selection", self.selection)
+                self.resume_state.setdefault("selected_courses", self.selected_courses)
+                self.resume_manager.save_state(self.platform_name, self.resume_state)
 
     def _run_with_retries(self, func, description: str, treat_false_as_failure: bool = True):
         """Execute ``func`` with the configured retry policy.
@@ -149,6 +171,108 @@ class DownloadWorker(QRunnable):
                     f"Nova tentativa em {self._retry_delay_seconds}s. Erro: {exc}"
                 )
                 time.sleep(self._retry_delay_seconds)
+
+    def _build_request_context(self, session: requests.Session) -> Dict[str, Any]:
+        return {
+            "headers": dict(session.headers),
+            "cookies": session.cookies.get_dict(),
+        }
+
+    def _persist_resume_state(self) -> None:
+        if self.resume_manager and self.resume_state:
+            self.resume_manager.save_state(self.platform_name, self.resume_state)
+
+    def _ensure_resume_state(self, session: requests.Session) -> None:
+        if not self.resume_manager:
+            return
+
+        request_context = self._build_request_context(session)
+
+        if not self.resume_state:
+            self.resume_state = self.resume_manager.initialize_state(
+                self.platform_name, self.selection, self.selected_courses, request_context
+            )
+        else:
+            self.resume_state.setdefault("selection", self.selection)
+            self.resume_state.setdefault("selected_courses", self.selected_courses)
+            self.resume_state.setdefault("progress", {})
+            self.resume_state.setdefault("completed", False)
+            self.resume_state["request"] = request_context
+            self._persist_resume_state()
+
+    def _prepare_lesson_resume(
+        self,
+        course_id: str,
+        module_key: str,
+        lesson_key: str,
+        lesson_details,
+    ) -> Dict[str, Any] | None:
+        if not self.resume_manager or not self.resume_state:
+            return None
+
+        return self.resume_manager.ensure_lesson_entry(
+            self.resume_state,
+            self.platform_name,
+            course_id,
+            module_key,
+            lesson_key,
+            lesson_details,
+        )
+
+    def _mark_resume_status(
+        self,
+        course_id: str,
+        module_key: str,
+        lesson_key: str,
+        category: str,
+        item_key: str | None,
+        success: bool,
+    ) -> None:
+        if not self.resume_manager or not self.resume_state:
+            return
+
+        self.resume_manager.mark_status(
+            self.resume_state,
+            self.platform_name,
+            course_id,
+            module_key,
+            lesson_key,
+            category,
+            item_key,
+            success,
+        )
+
+    def _should_skip_download(
+        self,
+        lesson_entry: Dict[str, Any] | None,
+        category: str,
+        item_key: str | None = None,
+    ) -> bool:
+        if not lesson_entry:
+            return False
+
+        if category in {"description", "auxiliary_urls"}:
+            return bool(lesson_entry.get(category))
+
+        category_map = lesson_entry.get(category, {})
+        if item_key is None:
+            return False
+
+        return bool(category_map.get(item_key))
+
+    @staticmethod
+    def _is_lesson_complete(lesson_entry: Dict[str, Any] | None) -> bool:
+        if not lesson_entry:
+            return False
+
+        return all(
+            [
+                lesson_entry.get("description", True),
+                lesson_entry.get("auxiliary_urls", True),
+                all(lesson_entry.get("videos", {}).values()),
+                all(lesson_entry.get("attachments", {}).values()),
+            ]
+        )
 
     def _find_downloaded_media(self, expected_path: Path) -> Optional[Path]:
         """Resolve the actual path of a downloaded media file.
@@ -268,10 +392,13 @@ class DownloadWorker(QRunnable):
             if not session:
                 raise ConnectionError("Download worker requires an authenticated session.")
 
+            self._ensure_resume_state(session)
+
             total_lessons = sum(len(module.get("lessons", [])) for course in self.selection.values() for module in course.get("modules", []))
             lessons_processed = 0
 
             for course_id, course_data in self.selection.items():
+                course_id_str = str(course_id)
                 course_slug = course_data.get("slug")
                 course_title = course_data.get("name", f"Curso-{course_id}")
                 course_title = sanitize_path_component(course_title)
@@ -289,6 +416,11 @@ class DownloadWorker(QRunnable):
                     module_title = truncate_component(module_title, getattr(self.settings, 'max_module_name_length', 60))
                     module_order = module.get("order", module_index)
                     module_id = module.get("id")
+                    module_key = (
+                        ResumeManager._module_key(module, module_index)
+                        if self.resume_manager
+                        else str(module_id or module_order)
+                    )
                     module_title_full = f"{module_order}. {module_title}"
                     module_path = course_path / module_title_full
                     module_path.mkdir(parents=True, exist_ok=True)
@@ -301,6 +433,31 @@ class DownloadWorker(QRunnable):
                             progress = int((lessons_processed / total_lessons) * 100) if total_lessons > 0 else 0
                             self.signals.progress.emit(progress)
                             continue
+
+                        lesson_key = (
+                            ResumeManager._lesson_key(lesson, lesson_index)
+                            if self.resume_manager
+                            else str(lesson.get("id") or lesson.get("order") or lesson_index)
+                        )
+
+                        if self.resume_state and self.resume_manager:
+                            existing_entry = (
+                                self.resume_state.get("progress", {})
+                                .get(course_id_str, {})
+                                .get("modules", {})
+                                .get(module_key, {})
+                                .get("lessons", {})
+                                .get(lesson_key)
+                            )
+                            if self._is_lesson_complete(existing_entry):
+                                self.signals.result.emit(
+                                    f"    - Aula '{lesson.get('title', 'Unknown Lesson')}' já concluída anteriormente. Pulando downloads."
+                                )
+                                lessons_processed += 1
+                                progress = int((lessons_processed / total_lessons) * 100) if total_lessons > 0 else 0
+                                self.signals.progress.emit(progress)
+                                continue
+
                         lesson_title = lesson.get("title", "Aula sem titulo")
                         lesson_title = sanitize_path_component(lesson_title)
                         lesson_title = truncate_component(lesson_title, getattr(self.settings, 'max_lesson_name_length', 60))
@@ -318,62 +475,83 @@ class DownloadWorker(QRunnable):
                                 treat_false_as_failure=False,
                             )
 
+                            lesson_entry = self._prepare_lesson_resume(
+                                course_id_str, module_key, lesson_key, lesson_details
+                            )
+
                             logging.info(f"Aula '{lesson_title}' conteúdo: "
                                             f"{len(lesson_details.videos)} vídeo(s), "
                                             f"{len(lesson_details.attachments)} anexo(s).")
-                            
+
                             if lesson_details.description:
-                                if lesson_details.description.description_type in ("text", "markdown"):
-                                    description_path = lesson_path / "Descrição.txt"
+                                if self._should_skip_download(lesson_entry, "description"):
+                                    self.signals.result.emit(
+                                        "      - Descrição já registrada no resumo. Pulando download."
+                                    )
                                 else:
-                                    description_path = lesson_path / "Descrição.html"
-                                with open(description_path, 'w', encoding='utf-8') as desc_file:
-                                    desc_file.write(lesson_details.description.text)
-                                if self.settings.download_embedded_videos:
-                                    html = lesson_details.description.text or ""
-                                    found_urls = []
-                                    found_urls.extend(re.findall(r'<iframe[^>]+src=["\']([^"\']+)["\']', html, flags=re.I))
-                                    found_urls.extend(re.findall(r'<video[^>]+src=["\']([^"\']+)["\']', html, flags=re.I))
-                                    found_urls.extend(re.findall(r'<source[^>]+src=["\']([^"\']+)["\']', html, flags=re.I))
-                                    found_urls.extend(re.findall(r'href=["\'](https?://[^"\']+)["\']', html, flags=re.I))
-                                    found_urls.extend(re.findall(r'https?://[^\s"\'<>]+', html, flags=re.I))
+                                    description_path: Path
+                                    if lesson_details.description.description_type in ("text", "markdown"):
+                                        description_path = lesson_path / "Descrição.txt"
+                                    else:
+                                        description_path = lesson_path / "Descrição.html"
+                                    try:
+                                        with open(description_path, 'w', encoding='utf-8') as desc_file:
+                                            desc_file.write(lesson_details.description.text)
+                                        self._mark_resume_status(
+                                            course_id_str, module_key, lesson_key, "description", None, True
+                                        )
+                                    except Exception as exc:
+                                        logging.error("Falha ao salvar descrição: %s", exc, exc_info=True)
+                                        self._mark_resume_status(
+                                            course_id_str, module_key, lesson_key, "description", None, False
+                                        )
+                                        raise
 
-                                    normalized = []
-                                    for u in found_urls:
-                                        if not u:
-                                            continue
-                                        if u.startswith('//'):
-                                            u = 'https:' + u
-                                        if u.startswith('javascript:') or u.startswith('mailto:') or u.startswith('#'):
-                                            continue
-                                        if u not in normalized:
-                                            normalized.append(u)
+                                    if self.settings.download_embedded_videos:
+                                        html = lesson_details.description.text or ""
+                                        found_urls = []
+                                        found_urls.extend(re.findall(r'<iframe[^>]+src=["\']([^"\']+)["\']', html, flags=re.I))
+                                        found_urls.extend(re.findall(r'<video[^>]+src=["\']([^"\']+)["\']', html, flags=re.I))
+                                        found_urls.extend(re.findall(r'<source[^>]+src=["\']([^"\']+)["\']', html, flags=re.I))
+                                        found_urls.extend(re.findall(r'href=["\'](https?://[^"\']+)["\']', html, flags=re.I))
+                                        found_urls.extend(re.findall(r'https?://[^\s"\'<>]+', html, flags=re.I))
 
-                                    if normalized:
-                                        for emb_idx, emb_url in enumerate(normalized, start=1):
-                                            emb_name = f"{emb_idx}. Aula"
-                                            emb_name = truncate_filename_preserve_ext(emb_name, getattr(self.settings, 'max_file_name_length', 30))
-                                            emb_path = lesson_path / emb_name
-                                            logging.info(f"Baixando vídeo linkado '{emb_url}' para '{emb_path}'")
-                                            downloader = YtdlpDownloader(self.settings_manager)
-                                            try:
-                                                self._run_with_retries(
-                                                    lambda: downloader.download_video(
-                                                        emb_url, self.platform.get_session(), emb_path
-                                                    ),
-                                                    description=f"Download do vídeo linkado '{emb_name}'",
-                                                )
-                                                self.signals.result.emit(f"    - Vídeo linkado baixado: {emb_name}")
-                                                self._maybe_transcribe_video(emb_path)
-                                            except Exception as e:
-                                                logging.error(
-                                                    f"Erro ao baixar vídeo linkado {emb_url}: {e}",
-                                                    exc_info=True,
-                                                )
-                                                self.signals.result.emit(
-                                                    f"    - [ERROR] Falha ao baixar vídeo linkado: {emb_url}"
-                                                )
-                                self.signals.result.emit(f"      - Descrição salva em {description_path}")
+                                        normalized = []
+                                        for u in found_urls:
+                                            if not u:
+                                                continue
+                                            if u.startswith('//'):
+                                                u = 'https:' + u
+                                            if u.startswith('javascript:') or u.startswith('mailto:') or u.startswith('#'):
+                                                continue
+                                            if u not in normalized:
+                                                normalized.append(u)
+
+                                        if normalized:
+                                            for emb_idx, emb_url in enumerate(normalized, start=1):
+                                                emb_name = f"{emb_idx}. Aula"
+                                                emb_name = truncate_filename_preserve_ext(emb_name, getattr(self.settings, 'max_file_name_length', 30))
+                                                emb_path = lesson_path / emb_name
+                                                logging.info(f"Baixando vídeo linkado '{emb_url}' para '{emb_path}'")
+                                                downloader = YtdlpDownloader(self.settings_manager)
+                                                try:
+                                                    self._run_with_retries(
+                                                        lambda: downloader.download_video(
+                                                            emb_url, self.platform.get_session(), emb_path
+                                                        ),
+                                                        description=f"Download do vídeo linkado '{emb_name}'",
+                                                    )
+                                                    self.signals.result.emit(f"    - Vídeo linkado baixado: {emb_name}")
+                                                    self._maybe_transcribe_video(emb_path)
+                                                except Exception as e:
+                                                    logging.error(
+                                                        f"Erro ao baixar vídeo linkado {emb_url}: {e}",
+                                                        exc_info=True,
+                                                    )
+                                                    self.signals.result.emit(
+                                                        f"    - [ERROR] Falha ao baixar vídeo linkado: {emb_url}"
+                                                    )
+                                    self.signals.result.emit(f"      - Descrição salva em {description_path}")
 
                             for video_index, video in enumerate(lesson_details.videos, start=1):
                                 video_order = video.order or video_index
@@ -382,6 +560,14 @@ class DownloadWorker(QRunnable):
                                 video_path = lesson_path / video_name
                                 logging.info(f"Baixando Vídeo '{video_name}' para '{video_path}'")
                                 downloader = DownloaderFactory.get_downloader(video.url, self.settings_manager)
+                                video_key = str(video.video_id or video_order)
+
+                                if self._should_skip_download(lesson_entry, "videos", video_key):
+                                    self.signals.result.emit(
+                                        f"    - Vídeo já baixado previamente pelo resumo: {video_name}"
+                                    )
+                                    continue
+
                                 try:
                                     self._run_with_retries(
                                         lambda: downloader.download_video(
@@ -389,9 +575,15 @@ class DownloadWorker(QRunnable):
                                         ),
                                         description=f"Download do vídeo '{video_name}'",
                                     )
+                                    self._mark_resume_status(
+                                        course_id_str, module_key, lesson_key, "videos", video_key, True
+                                    )
                                     self.signals.result.emit(f"    - Vídeo baixado: {video_name}")
                                     self._maybe_transcribe_video(video_path)
                                 except Exception:
+                                    self._mark_resume_status(
+                                        course_id_str, module_key, lesson_key, "videos", video_key, False
+                                    )
                                     self.signals.result.emit(
                                         f"    - [ERROR] Falha ao baixar vídeo: {video_name}"
                                     )
@@ -403,6 +595,14 @@ class DownloadWorker(QRunnable):
                                 full_attachment_name = truncate_filename_preserve_ext(full_attachment_name, getattr(self.settings, 'max_file_name_length', 30))
                                 attachment_path = lesson_path / full_attachment_name
                                 logging.info(f"Baixando Anexo '{attachment.filename}' para '{attachment_path}'")
+                                attachment_key = str(attachment.attachment_id or attachment_order)
+
+                                if self._should_skip_download(lesson_entry, "attachments", attachment_key):
+                                    self.signals.result.emit(
+                                        f"    - Anexo já baixado previamente pelo resumo: {attachment.filename}"
+                                    )
+                                    continue
+
                                 try:
                                     self._run_with_retries(
                                         lambda: self.platform.download_attachment(
@@ -410,23 +610,53 @@ class DownloadWorker(QRunnable):
                                         ),
                                         description=f"Download do anexo '{attachment.filename}'",
                                     )
+                                    self._mark_resume_status(
+                                        course_id_str, module_key, lesson_key, "attachments", attachment_key, True
+                                    )
                                     self.signals.result.emit(f"    - Anexo baixado: {attachment.filename}")
                                 except Exception:
+                                    self._mark_resume_status(
+                                        course_id_str, module_key, lesson_key, "attachments", attachment_key, False
+                                    )
                                     self.signals.result.emit(
                                         f"    - [ERROR] Falha ao baixar anexo: {attachment.filename}"
                                     )
-                            
+
                             if lesson_details.auxiliary_urls:
                                 aux_path = lesson_path / f"Links Extras.txt"
-                                with open(aux_path, 'w', encoding='utf-8') as aux_file:
-                                    for aux_index, aux in enumerate(lesson_details.auxiliary_urls, start=1):
-                                        aux_file.write(f"{aux_index}. {aux}\n")
+                                if self._should_skip_download(lesson_entry, "auxiliary_urls"):
+                                    self.signals.result.emit(
+                                        "      - Links extras já salvos anteriormente. Pulando geração do arquivo."
+                                    )
+                                else:
+                                    try:
+                                        with open(aux_path, 'w', encoding='utf-8') as aux_file:
+                                            for aux_index, aux in enumerate(lesson_details.auxiliary_urls, start=1):
+                                                aux_file.write(f"{aux_index}. {aux}\n")
+                                        self._mark_resume_status(
+                                            course_id_str, module_key, lesson_key, "auxiliary_urls", None, True
+                                        )
+                                    except Exception as exc:
+                                        logging.error("Falha ao salvar links extras: %s", exc, exc_info=True)
+                                        self._mark_resume_status(
+                                            course_id_str, module_key, lesson_key, "auxiliary_urls", None, False
+                                        )
+                                        raise
                                 self.signals.result.emit(f"      - URL auxiliar salva em {aux_path}")
-                            
+
                         except Exception as e:
                             logging.error(f"Failed to fetch details for lesson '{lesson_title}': {e}")
+                            self._mark_resume_status(
+                                course_id_str, module_key, lesson_key, "description", None, False
+                            )
                             self.signals.result.emit(f"    - [ERROR] Falha em obeter dados da aula: {lesson_title}")
-                        
+
+                        if self.resume_manager and self.resume_state:
+                            self.resume_state["completed"] = self.resume_manager.is_complete(
+                                self.resume_state
+                            )
+                            self._persist_resume_state()
+
                         lessons_processed += 1
                         progress = int((lessons_processed / total_lessons) * 100) if total_lessons > 0 else 0
                         self.signals.progress.emit(progress)

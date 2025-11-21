@@ -222,6 +222,7 @@ class SettingsView(QWidget):
 
         self.retry_delay_spin = QSpinBox()
         self.retry_delay_spin.setRange(0, 600)
+        self.create_resume_summary_check = QCheckBox("Criar JSON de Resumo")
 
         self.download_widevine_check = QCheckBox("Baixar Widevine")
 
@@ -302,6 +303,7 @@ class SettingsView(QWidget):
             "Quantidade de Retentativas de download:", self.retry_attempts_spin
         )
         self._paid_form_layout.addRow("Delay para Retentativas (s):", self.retry_delay_spin)
+        self._paid_form_layout.addRow(self.create_resume_summary_check)
         self._paid_form_layout.addRow(self.download_widevine_check)
         self._paid_form_layout.addRow("Caminho da CDM:", self.cdm_path_edit)
         self._paid_form_layout.addRow(self.use_http_proxy_check)
@@ -366,6 +368,9 @@ class SettingsView(QWidget):
         self.max_concurrent_downloads_spin.setValue(settings.max_concurrent_segment_downloads)
         self.retry_attempts_spin.setValue(settings.download_retry_attempts)
         self.retry_delay_spin.setValue(settings.download_retry_delay_seconds)
+        self.create_resume_summary_check.setChecked(
+            getattr(settings, "create_resume_summary", False)
+        )
         self.download_widevine_check.setChecked(settings.download_widevine)
         self.cdm_path_edit.setText(settings.cdm_path)
         self.use_http_proxy_check.setChecked(settings.use_http_proxy)
@@ -416,6 +421,7 @@ class SettingsView(QWidget):
             proxy_username=self.proxy_username_edit.text().strip(),
             proxy_password=self.proxy_password_edit.text(),
             proxy_port=self.proxy_port_spin.value(),
+            create_resume_summary=self.create_resume_summary_check.isChecked(),
             use_whisper_transcription=self.use_whisper_transcription_check.isChecked(),
             whisper_model=self.whisper_model_combo.currentText(),
             whisper_language=self.whisper_language_combo.currentData(),

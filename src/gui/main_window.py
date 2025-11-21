@@ -1,7 +1,8 @@
 import json
+import logging
+from pathlib import Path
 from PySide6.QtCore import QThreadPool, QTimer
 from PySide6.QtWidgets import QMainWindow, QWidget, QStackedWidget, QTabWidget, QMessageBox
-import logging
 
 from src.config.settings_manager import SettingsManager
 from src.config.version import BUILD_NUMBER, VERSION_FILE_URL
@@ -13,6 +14,7 @@ from src.gui.views.settings_view import SettingsView
 from src.platforms.base import PlatformFactory, BasePlatform
 from src.app.workers import FetchCoursesWorker, FetchModulesWorker, DownloadWorker
 from src.app.version_checker import VersionCheckWorker
+from src.utils.resume_manager import ResumeManager
 
 class MainWindow(QMainWindow):
     """Main application window that holds all UI views."""
@@ -25,7 +27,9 @@ class MainWindow(QMainWindow):
 
         self._settings_manager = settings_manager
         self._platform: BasePlatform | None = None
+        self._platform_name: str | None = None
         self._selected_courses: list = []
+        self._resume_state: dict | None = None
         self._thread_pool = QThreadPool()
 
         self._stacked_widget = QStackedWidget()
@@ -114,6 +118,9 @@ class MainWindow(QMainWindow):
 
     def _fetch_courses(self, platform_name: str, credentials: dict) -> None:
         """Starts a worker to fetch courses."""
+        self._resume_state = None
+        self._platform_name = platform_name
+
         self._platform = PlatformFactory.create_platform(platform_name, self._settings_manager)
         if not self._platform:
             logging.error(f"Platform '{platform_name}' not found.")
@@ -133,6 +140,35 @@ class MainWindow(QMainWindow):
         """Handles the result from the FetchCoursesWorker."""
         courses = json.loads(courses_json)
         logging.info(f"Courses fetched: {len(courses)} items")
+
+        settings = self._settings_manager.get_settings()
+        if getattr(settings, "create_resume_summary", False):
+            resume_manager = ResumeManager(Path(settings.download_path))
+            saved_state = resume_manager.load_state(self._platform_name or "")
+            if saved_state and not resume_manager.is_complete(saved_state):
+                reply = QMessageBox.question(
+                    self,
+                    "Retomar download",
+                    (
+                        "Foi encontrado um resumo de download anterior para esta plataforma. "
+                        "Deseja retomar a sessão inacabada?"
+                    ),
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                )
+                if reply == QMessageBox.StandardButton.Yes:
+                    self._resume_state = saved_state
+
+        if self._resume_state:
+            selection = self._resume_state.get("selection")
+            if selection:
+                self._selected_courses = self._resume_state.get("selected_courses", [])
+                self._stacked_widget.setCurrentWidget(self.progress_view)
+                self.progress_view.log_message("Retomando download pendente...")
+                self._start_download(json.dumps(selection), resume_state=self._resume_state)
+                self._resume_state = None
+                return
+            self._resume_state = None
+
         self.course_selection_view.update_courses(courses)
         self._stacked_widget.setCurrentWidget(self.course_selection_view)
 
@@ -156,7 +192,7 @@ class MainWindow(QMainWindow):
         self.module_selection_view.update_modules(content, self._selected_courses)
         self._stacked_widget.setCurrentWidget(self.module_selection_view)
 
-    def _start_download(self, selection_json: str) -> None:
+    def _start_download(self, selection_json: str, resume_state: dict | None = None) -> None:
         """Starts a worker to download the selected content."""
         if not self._platform:
             return
@@ -164,10 +200,21 @@ class MainWindow(QMainWindow):
         selection = json.loads(selection_json)
             
         self._stacked_widget.setCurrentWidget(self.progress_view)
-        self.progress_view.log_message("Iniciando download...")
-        
+        if resume_state:
+            self.progress_view.log_message("Retomando downloads da sessão anterior...")
+        else:
+            self.progress_view.log_message("Iniciando download...")
+
         download_dir = self._settings_manager.get_settings().download_path
-        worker = DownloadWorker(self._platform, selection, download_dir, self._settings_manager)
+        worker = DownloadWorker(
+            self._platform,
+            selection,
+            download_dir,
+            self._settings_manager,
+            self._platform_name or "",
+            self._selected_courses,
+            resume_state,
+        )
         worker.signals.progress.connect(self.progress_view.set_progress)
         worker.signals.result.connect(self.progress_view.log_message)
         worker.signals.error.connect(self._handle_worker_error)
