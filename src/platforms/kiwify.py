@@ -11,6 +11,8 @@ from src.app.models import Attachment, Description, LessonContent, Video
 from src.config.settings_manager import SettingsManager
 from src.platforms.base import AuthField, AuthFieldType, BasePlatform, PlatformFactory
 
+logger = logging.getLogger(__name__)
+
 LOGIN_URL = "https://admin-api.kiwify.com.br/v1/handleAuth/login"
 COURSES_URL = "https://admin-api.kiwify.com.br/v1/viewer/schools/courses"
 SCHOOL_COURSES_URL = "https://admin-api.kiwify.com.br/v1/viewer/schools/{school_id}/courses"
@@ -172,16 +174,26 @@ Para usuários gratuitos: Como obter o token da Kiwify?:
         for course in courses:
             course_id = course.get("id")
             if not course_id:
-                logging.warning("Curso sem ID encontrado, ignorando.")
+                logger.warning("Curso sem ID encontrado, ignorando: %r", course)
                 continue
 
+            logger.debug("Kiwify: buscando detalhes do curso %s", course_id)
             details = self._get_course_details(str(course_id))
+            logger.debug("Kiwify: detalhes crus do curso %s (tipo=%s): %r", course_id, type(details), details)
+
             if not details:
-                logging.warning("Nenhum detalhe encontrado para o curso %s", course_id)
+                logger.warning("Nenhum detalhe encontrado para o curso %s", course_id)
                 continue
 
-            modules_data = self._extract_modules(details)
-            processed_modules = self._process_modules(modules_data)
+            modules_data, all_lessons = self._extract_modules(details)
+            logger.debug(
+                "Kiwify: modules_data para curso %s (tipo=%s): %r",
+                course_id,
+                type(modules_data),
+                modules_data,
+            )
+
+            processed_modules = self._process_modules(modules_data, all_lessons)
 
             course_entry = course.copy()
             course_entry["title"] = course.get("name", f"Curso {course_id}")
@@ -190,46 +202,81 @@ Para usuários gratuitos: Como obter o token da Kiwify?:
 
         return all_content
 
+
     def _get_course_details(self, course_id: str) -> Dict[str, Any]:
         for url_template in COURSE_DETAILS_URLS:
             url = url_template.format(course_id=course_id)
             try:
+                logger.debug("Kiwify: chamando detalhes do curso em %s", url)
                 response = self._session.get(url)
                 response.raise_for_status()
                 data = response.json()
+                logger.debug("Kiwify: resposta bruta de %s (tipo=%s): %r", url, type(data), data)
 
                 if isinstance(data, dict):
                     if "course" in data:
+                        logger.debug("Kiwify: usando data['course'] para curso %s", course_id)
                         return data["course"]
                     if "data" in data:
+                        logger.debug("Kiwify: usando data['data'] para curso %s", course_id)
                         return data["data"]
                     if "content" in data:
+                        logger.debug("Kiwify: usando data['content'] para curso %s", course_id)
                         return data["content"]
                     if "modules" in data:
+                        logger.debug("Kiwify: usando data completo (já tem 'modules') para curso %s", course_id)
                         return data
             except Exception as exc:  # pragma: no cover - network dependent
-                logging.debug("Kiwify course detail fetch failed for %s: %s", url, exc)
+                logger.debug("Kiwify course detail fetch failed for %s: %s", url, exc)
                 continue
 
-        logging.error("Falha ao obter detalhes do curso %s em todas as APIs conhecidas.", course_id)
+        logger.error("Falha ao obter detalhes do curso %s em todas as APIs conhecidas.", course_id)
         return {}
 
-    def _extract_modules(self, course_details: Dict[str, Any]) -> Any:
-        if "modules" in course_details:
-            return course_details["modules"]
-        if "all_modules" in course_details:
-            return course_details["all_modules"]
-        return []
 
-    def _process_modules(self, modules_data: Any) -> List[Dict[str, Any]]:
+    def _extract_modules(self, course_details: Dict[str, Any]) -> tuple[Any, Dict[str, Any]]:
+        # course_details aqui é o data["data"] da resposta
+        all_lessons = course_details.get("all_lessons", {})  # <- mapa id -> aula
+        if "modules" in course_details:
+            modules = course_details["modules"]
+        elif "all_modules" in course_details:
+            modules = course_details["all_modules"]
+        else:
+            modules = []
+
+        return modules, all_lessons
+
+
+    def _process_modules(self, modules_data: Any, all_lessons: Dict[str, Any] | None = None) -> List[Dict[str, Any]]:
         modules: List[Dict[str, Any]] = []
+
+        logger.debug(
+            "Kiwify: _process_modules recebeu modules_data (tipo=%s): %r",
+            type(modules_data),
+            modules_data,
+        )
+
         if isinstance(modules_data, dict):
             iterable = modules_data.values()
         else:
             iterable = modules_data or []
 
         for module_index, module in enumerate(iterable, start=1):
+            logger.debug(
+                "Kiwify: processando módulo #%d (tipo=%s): %r",
+                module_index,
+                type(module),
+                module,
+            )
+
             lessons_raw = module.get("lessons", {}) if isinstance(module, dict) else {}
+            logger.debug(
+                "Kiwify: lessons_raw do módulo #%d (tipo=%s): %r",
+                module_index,
+                type(lessons_raw),
+                lessons_raw,
+            )
+
             if isinstance(lessons_raw, dict):
                 lessons_iterable = lessons_raw.values()
             else:
@@ -237,9 +284,17 @@ Para usuários gratuitos: Como obter o token da Kiwify?:
 
             lessons: List[Dict[str, Any]] = []
             for lesson_index, lesson in enumerate(lessons_iterable, start=1):
-                lesson_id = lesson.get("id") if isinstance(lesson, dict) else str(lesson)
-                lesson_title = self._extract_lesson_title(lesson) or f"Aula {lesson_index}"
-                lesson_order = lesson.get("order", lesson_index) if isinstance(lesson, dict) else lesson_index
+                # se veio dict, usa direto; se veio id (str), tenta resolver em all_lessons
+                if isinstance(lesson, dict):
+                    lesson_obj = lesson
+                else:
+                    lesson_id_str = str(lesson)
+                    lesson_obj = (all_lessons or {}).get(lesson_id_str, {"id": lesson_id_str})
+
+                lesson_id = lesson_obj.get("id")
+                lesson_title = self._extract_lesson_title(lesson_obj) or f"Aula {lesson_index}"
+                lesson_order = lesson_obj.get("order", lesson_index)
+
                 lessons.append(
                     {
                         "id": lesson_id,
@@ -250,8 +305,21 @@ Para usuários gratuitos: Como obter o token da Kiwify?:
                 )
 
             module_id = module.get("id") if isinstance(module, dict) else str(module_index)
-            module_title = module.get("name") if isinstance(module, dict) else f"Módulo {module_index}"
+            module_title_raw = module.get("name") if isinstance(module, dict) else None
+            if not module_title_raw or module_title_raw == ".":
+                module_title = f"Módulo {module_index}"
+            else:
+                module_title = module_title_raw
             module_order = module.get("order", module_index) if isinstance(module, dict) else module_index
+
+            logger.debug(
+                "Kiwify: módulo #%d -> id=%r, title=%r, order=%r, total_aulas=%d",
+                module_index,
+                module_id,
+                module_title,
+                module_order,
+                len(lessons),
+            )
 
             modules.append(
                 {
@@ -263,19 +331,39 @@ Para usuários gratuitos: Como obter o token da Kiwify?:
                 }
             )
 
+        logger.debug("Kiwify: módulos processados: %r", modules)
         return modules
 
+
     def _extract_lesson_title(self, lesson: Any) -> str:
+        logger.debug(
+            "Kiwify: _extract_lesson_title recebeu (tipo=%s): %r",
+            type(lesson),
+            lesson,
+        )
+
         if not isinstance(lesson, dict):
-            return str(lesson)
+            result = str(lesson)
+            logger.debug("Kiwify: lesson não é dict, usando str(lesson) como título: %r", result)
+            return result
 
         for key in ("title", "name", "ref"):
             value = lesson.get(key)
+            logger.debug("Kiwify: tentando campo '%s' em lesson -> %r", key, value)
             if value:
-                return str(value)
+                result = str(value)
+                logger.debug("Kiwify: usando '%s' como título da aula: %r", key, result)
+                return result
 
         lesson_id = lesson.get("id")
-        return str(lesson_id) if lesson_id else ""
+        if lesson_id:
+            result = str(lesson_id)
+            logger.debug("Kiwify: caindo para 'id' como título da aula: %r", result)
+            return result
+
+        logger.debug("Kiwify: nenhum título encontrado, retornando string vazia.")
+        return ""
+
 
     def fetch_lesson_details(self, lesson: Dict[str, Any], course_slug: str, course_id: str, module_id: str) -> LessonContent:
         if not self._session:
