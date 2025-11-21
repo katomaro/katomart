@@ -91,6 +91,9 @@ O domínio costuma seguir o padrão *.astronmembers.com, mas instâncias customi
         response = session.post(login_url, files=login_data)
         response.raise_for_status()
 
+        logging.debug("Astronmembers login response URL: %s", response.url)
+        logging.debug("Astronmembers login response length: %s", len(response.text))
+
         self._session = session
         logging.info("Sessão autenticada na Astronmembers.")
 
@@ -102,8 +105,12 @@ O domínio costuma seguir o padrão *.astronmembers.com, mas instâncias customi
         response = self._session.get(dashboard_url)
         response.raise_for_status()
 
+        logging.debug("Astronmembers dashboard URL resolved to: %s", response.url)
+        logging.debug("Astronmembers dashboard content length: %s", len(response.text))
+
         final_base_url = f"{urlparse(response.url).scheme}://{urlparse(response.url).netloc}"
         courses = self._parse_courses_from_html(response.text, final_base_url)
+        logging.debug("Astronmembers parsed courses: %s", courses)
         return courses
 
     def fetch_course_content(self, courses: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -119,6 +126,8 @@ O domínio costuma seguir o padrão *.astronmembers.com, mas instâncias customi
             structure = self._get_course_details(course_url)
             if not structure:
                 continue
+
+            logging.debug("Astronmembers course structure for %s: %s", course_url, structure)
 
             course_entry = {
                 "id": course.get("id") or course.get("slug") or course.get("title"),
@@ -305,6 +314,7 @@ O domínio costuma seguir o padrão *.astronmembers.com, mas instâncias customi
     def _get_lesson_content(self, lesson_url: str) -> Optional[Dict[str, Any]]:
         response = self._session.get(lesson_url)
         response.raise_for_status()
+        logging.debug("Astronmembers lesson page length for %s: %s", lesson_url, len(response.text))
         soup = BeautifulSoup(response.text, "html.parser")
 
         player_iframe = soup.select_one("iframe.streaming-video-url")
@@ -361,6 +371,7 @@ O domínio costuma seguir o padrão *.astronmembers.com, mas instâncias customi
         }
         response = self._session.get(player_url, headers=headers, timeout=20)
         response.raise_for_status()
+        logging.debug("Astronmembers Hotmart player response length: %s", len(response.text))
         soup = BeautifulSoup(response.text, "html.parser")
         next_data_script = soup.find("script", id="__NEXT_DATA__")
         if not next_data_script:

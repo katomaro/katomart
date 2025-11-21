@@ -66,6 +66,7 @@ Para usuários Gratuitos: Como obter o token de acesso da Medway?:
             response = self._session.get(next_url)
             response.raise_for_status()
             data = response.json()
+            logging.debug("Medway course page payload from %s: %s", next_url, data)
             results = data.get("results", [])
 
             for course in results:
@@ -135,6 +136,7 @@ Para usuários Gratuitos: Como obter o token de acesso da Medway?:
             response = self._session.get(next_url)
             response.raise_for_status()
             data = response.json()
+            logging.debug("Medway subjects payload from %s: %s", next_url, data)
             subjects.extend(data.get("results", []))
             next_url = data.get("next")
 
@@ -143,12 +145,16 @@ Para usuários Gratuitos: Como obter o token de acesso da Medway?:
     def _fetch_course_modules(self, subject_id: str) -> List[Dict[str, Any]]:
         response = self._session.get(MODULES_URL.format(subject_id=subject_id))
         response.raise_for_status()
-        return response.json()
+        payload = response.json()
+        logging.debug("Medway modules for subject %s: %s", subject_id, payload)
+        return payload
 
     def _fetch_module_contents(self, module_id: str) -> Dict[str, Any]:
         response = self._session.get(MODULE_CONTENT_URL.format(module_id=module_id))
         response.raise_for_status()
-        return response.json()
+        payload = response.json()
+        logging.debug("Medway module %s contents: %s", module_id, payload)
+        return payload
 
     def _build_module_entry(self, subject_name: str, subject_order: int, module: Dict[str, Any]) -> Dict[str, Any]:
         module_id = module.get("id")
@@ -213,6 +219,7 @@ Para usuários Gratuitos: Como obter o token de acesso da Medway?:
             response = self._session.get(DOCUMENT_DETAILS_URL.format(document_id=document_id))
             response.raise_for_status()
             doc_data = response.json()
+            logging.debug("Medway document %s metadata: %s", document_id, doc_data)
 
             file_url = doc_data.get("document", "")
             file_name = doc_data.get("name", "Documento")

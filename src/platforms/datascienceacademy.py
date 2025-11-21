@@ -67,6 +67,8 @@ Como obter o token da Data Science Academy?
         response = self._session.get(COURSES_PAGE_URL)
         response.raise_for_status()
 
+        logging.debug("Data Science Academy courses page length: %s", len(response.text))
+
         soup = BeautifulSoup(response.text, "html.parser")
         course_cards = soup.select("a.lw-course-card--stretched-link")
         courses: Dict[str, Dict[str, Any]] = {}
@@ -121,6 +123,7 @@ Como obter o token da Data Science Academy?
                 continue
 
             course_json = self._get_course_json(slug)
+            logging.debug("Data Science Academy course %s payload: %s", slug, course_json)
             modules = self._extract_sections(course_json)
 
             course_entry = course.copy()
@@ -134,11 +137,15 @@ Como obter o token da Data Science Academy?
         assert self._session
         primary = self._session.get(COURSE_CONTENT_URL.format(slug=slug))
         if primary.ok:
-            return primary.json()
+            payload = primary.json()
+            logging.debug("Data Science Academy primary course response for %s: %s", slug, payload)
+            return payload
 
         fallback = self._session.get(COURSE_CONTENT_FALLBACK_URL.format(slug=slug))
         fallback.raise_for_status()
-        return fallback.json()
+        payload = fallback.json()
+        logging.debug("Data Science Academy fallback course response for %s: %s", slug, payload)
+        return payload
 
     def _extract_sections(self, course_json: Dict[str, Any]) -> List[Dict[str, Any]]:
         sections = self._collect_sections(course_json)
@@ -226,6 +233,7 @@ Como obter o token da Data Science Academy?
         order = lesson.get("order", 1)
 
         html = self._fetch_unit_html(course_slug, unit_id)
+        logging.debug("Data Science Academy unit %s html length: %s", unit_id, len(html))
         title = self._extract_title_from_html(html) or lesson.get("title", f"Aula {order}")
 
         content = LessonContent()

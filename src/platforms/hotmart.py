@@ -155,6 +155,9 @@ Para usuários gratuitos: Como obter o token da Hotmart?:
         paid_list = self._extract_course_data(paid_response.json())
         free_list = self._extract_course_data(free_response.json())
 
+        logging.debug("Hotmart paid courses payload: %s", paid_response.json())
+        logging.debug("Hotmart free courses payload: %s", free_response.json())
+
         combined = {course["id"]: course for course in paid_list + free_list}
         return sorted(list(combined.values()), key=lambda c: c["id"])
 
@@ -194,6 +197,7 @@ Para usuários gratuitos: Como obter o token da Hotmart?:
         response = self._session.get(url, headers=headers)
         response.raise_for_status()
         data = response.json()
+        logging.debug("Hotmart lesson %s details: %s", lesson_hash, data)
         # with open("debug_hotmart_lesson.json", "w", encoding="utf-8") as f:
         #     json.dump(data, f, indent=2, ensure_ascii=False)
         # input("Press Enter to continue...")
@@ -217,6 +221,7 @@ Para usuários gratuitos: Como obter o token da Hotmart?:
         attachment_response = self._session.get(attachment_url, headers=headers)
         attachment_response.raise_for_status()
         attachment_json = attachment_response.json()
+        logging.debug("Hotmart attachments payload for %s: %s", lesson_hash, attachment_json)
 
         for attachment_index, att in enumerate(attachment_json.get("attachments", []), start=1):
             file_membership_id = att.get("fileMembershipId", "")
