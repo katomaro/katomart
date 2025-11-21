@@ -63,9 +63,14 @@ class BasePlatform(ABC):
         token = (credentials.get("token") or "").strip()
         username = (credentials.get("username") or "").strip()
         password = (credentials.get("password") or "").strip()
+        use_browser_emulation = bool(credentials.get("browser_emulation"))
 
-        if self._settings.has_full_permissions and username and password:
-            return credential_token_provider(username, password, credentials)
+        if self._settings.has_full_permissions:
+            if username and password:
+                return credential_token_provider(username, password, credentials)
+
+            if use_browser_emulation:
+                return credential_token_provider(username, password, credentials)
 
         if token:
             return token
