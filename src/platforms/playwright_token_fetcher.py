@@ -84,6 +84,8 @@ class PlaywrightTokenFetcher(ABC):
         headless: bool = True,
         wait_for_user_confirmation: Optional[Callable[[], None]] = None,
     ) -> str:
+        manual_login = not (username and password)
+
         async with async_playwright() as playwright:
             browser = await playwright.chromium.launch(headless=headless)
             page = await browser.new_page()
@@ -102,11 +104,11 @@ class PlaywrightTokenFetcher(ABC):
                     raise navigation_error or RuntimeError("Falha ao abrir a página de login.")
 
                 await self.dismiss_cookie_banner(page)
-                await self.fill_credentials(page, username, password)
-
                 auth_task = asyncio.create_task(self._capture_authorization_header(page))
 
-                await self.submit_login(page)
+                if not manual_login:
+                    await self.fill_credentials(page, username, password)
+                    await self.submit_login(page)
 
                 try:
                     await page.wait_for_load_state("networkidle", timeout=self.network_idle_timeout_ms)
