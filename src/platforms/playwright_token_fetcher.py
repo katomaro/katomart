@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from abc import ABC, abstractmethod
-from typing import Optional, Sequence, Tuple
+from typing import Callable, Optional, Sequence, Tuple
 
 from playwright.async_api import Page, TimeoutError as PlaywrightTimeoutError, async_playwright
 
@@ -37,7 +37,14 @@ class PlaywrightTokenFetcher(ABC):
         """Best-effort cookie dismissal. Platforms may override for custom behavior."""
         return None
 
-    def fetch_token(self, username: str, password: str) -> str:
+    def fetch_token(
+        self,
+        username: str,
+        password: str,
+        *,
+        headless: bool = True,
+        wait_for_user_confirmation: Optional[Callable[[], None]] = None,
+    ) -> str:
         """
         Synchronously obtains the bearer token after authenticating with credentials.
 
@@ -48,13 +55,32 @@ class PlaywrightTokenFetcher(ABC):
         try:
             asyncio.get_running_loop()
         except RuntimeError:
-            return asyncio.run(self.fetch_token_async(username, password))
+            return asyncio.run(
+                self.fetch_token_async(
+                    username,
+                    password,
+                    headless=headless,
+                    wait_for_user_confirmation=wait_for_user_confirmation,
+                )
+            )
 
-        return self._fetch_token_in_thread(username, password)
+        return self._fetch_token_in_thread(
+            username,
+            password,
+            headless=headless,
+            wait_for_user_confirmation=wait_for_user_confirmation,
+        )
 
-    async def fetch_token_async(self, username: str, password: str) -> str:
+    async def fetch_token_async(
+        self,
+        username: str,
+        password: str,
+        *,
+        headless: bool = True,
+        wait_for_user_confirmation: Optional[Callable[[], None]] = None,
+    ) -> str:
         async with async_playwright() as playwright:
-            browser = await playwright.chromium.launch()
+            browser = await playwright.chromium.launch(headless=headless)
             page = await browser.new_page()
 
             try:
@@ -79,18 +105,37 @@ class PlaywrightTokenFetcher(ABC):
                 if not auth_header:
                     raise ValueError("Não foi possível capturar o token de autorização durante o login.")
 
+                if wait_for_user_confirmation:
+                    await asyncio.to_thread(wait_for_user_confirmation)
+
                 return self._strip_bearer_prefix(auth_header)
             finally:
                 await browser.close()
 
-    def _fetch_token_in_thread(self, username: str, password: str) -> str:
+    def _fetch_token_in_thread(
+        self,
+        username: str,
+        password: str,
+        *,
+        headless: bool,
+        wait_for_user_confirmation: Optional[Callable[[], None]],
+    ) -> str:
         result: list[str] = []
         exc: list[BaseException] = []
         finished = threading.Event()
 
         def runner() -> None:
             try:
-                result.append(asyncio.run(self.fetch_token_async(username, password)))
+                result.append(
+                    asyncio.run(
+                        self.fetch_token_async(
+                            username,
+                            password,
+                            headless=headless,
+                            wait_for_user_confirmation=wait_for_user_confirmation,
+                        )
+                    )
+                )
             except BaseException as error:  # pragma: no cover - pass-through error handling
                 exc.append(error)
             finally:

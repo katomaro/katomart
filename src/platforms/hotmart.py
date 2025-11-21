@@ -124,9 +124,18 @@ Para usuários gratuitos: Como obter o token da Hotmart?:
 
     def _exchange_credentials_for_token(self, username: str, password: str, credentials: Dict[str, Any]) -> str:
         """Automates the Hotmart login flow to capture the bearer token."""
+        use_browser_emulation = bool(credentials.get("browser_emulation"))
+        confirmation_event = credentials.get("manual_auth_confirmation")
 
         try:
-            return self._token_fetcher.fetch_token(username, password)
+            return self._token_fetcher.fetch_token(
+                username,
+                password,
+                headless=not use_browser_emulation,
+                wait_for_user_confirmation=(
+                    confirmation_event.wait if confirmation_event else None
+                ),
+            )
         except Exception as exc:
             raise ConnectionError("Falha ao obter o token via Playwright. Revise usuário/senha.") from exc
     

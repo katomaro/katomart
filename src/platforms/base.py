@@ -17,6 +17,7 @@ class AuthFieldType(Enum):
     PASSWORD = "password"
     MULTILINE = "multiline"
     KEY_VALUE_LIST = "key_value_list"
+    CHECKBOX = "checkbox"
 
 
 @dataclass(frozen=True)
@@ -125,6 +126,13 @@ class BasePlatform(ABC):
                 label="Senha",
                 field_type=AuthFieldType.PASSWORD,
                 placeholder="Digite a senha da plataforma",
+                requires_membership=True,
+            ),
+            AuthField(
+                name="browser_emulation",
+                label="Emular Navegador (2FA/Captcha)",
+                field_type=AuthFieldType.CHECKBOX,
+                required=False,
                 requires_membership=True,
             ),
         ]
