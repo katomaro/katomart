@@ -121,6 +121,7 @@ class HotmartDownloader(BaseDownloader):
                 'http_headers': {header: value for header, value in session.headers.items()},
                 'quiet': True,
                 'no_warnings': True,
+                'progress': True,
                 'concurrent_fragment_downloads': max(1, self.settings.max_concurrent_segment_downloads),
                 **retry_opts,
             }

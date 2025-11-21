@@ -21,6 +21,11 @@ class PlaywrightTokenFetcher(ABC):
         """Initial URL used to start the login flow."""
 
     @property
+    def login_urls(self) -> Sequence[str]:
+        """Optional list of login URLs to try, in order of preference."""
+        return [self.login_url]
+
+    @property
     @abstractmethod
     def target_endpoints(self) -> Sequence[str]:
         """Endpoints whose requests should carry the authorization header."""
@@ -84,8 +89,17 @@ class PlaywrightTokenFetcher(ABC):
             page = await browser.new_page()
 
             try:
-                await page.goto(self.login_url, wait_until="domcontentloaded")
-                await page.wait_for_load_state("networkidle")
+                navigation_error: BaseException | None = None
+
+                for candidate in self.login_urls:
+                    try:
+                        await page.goto(candidate, wait_until="domcontentloaded")
+                        await page.wait_for_load_state("networkidle")
+                        break
+                    except BaseException as exc:
+                        navigation_error = exc
+                else:
+                    raise navigation_error or RuntimeError("Falha ao abrir a página de login.")
 
                 await self.dismiss_cookie_banner(page)
                 await self.fill_credentials(page, username, password)
@@ -104,12 +118,14 @@ class PlaywrightTokenFetcher(ABC):
 
                 if not auth_header:
                     raise ValueError("Não foi possível capturar o token de autorização durante o login.")
-
-                if wait_for_user_confirmation:
-                    await asyncio.to_thread(wait_for_user_confirmation)
-
                 return self._strip_bearer_prefix(auth_header)
             finally:
+                if wait_for_user_confirmation:
+                    try:
+                        await asyncio.to_thread(wait_for_user_confirmation)
+                    except Exception:
+                        pass
+
                 await browser.close()
 
     def _fetch_token_in_thread(
