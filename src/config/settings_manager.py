@@ -45,6 +45,7 @@ class AppSettings:
     membership_token: str = ""
     allowed_platforms: list[str] = field(default_factory=list)
     is_premium_member: bool = False
+    create_resume_summary: bool = False
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "AppSettings":
@@ -100,6 +101,7 @@ class SettingsManager:
             "whisper_model": default.whisper_model,
             "whisper_language": default.whisper_language,
             "whisper_output_format": default.whisper_output_format,
+            "create_resume_summary": default.create_resume_summary,
         }
         return replace(settings, **paid_only_fields)
 
@@ -155,6 +157,7 @@ class SettingsManager:
                 "whisper_model",
                 "whisper_language",
                 "whisper_output_format",
+                "create_resume_summary",
             }
 
             cached_premium_values = {
