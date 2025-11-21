@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, Callable
+import threading
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
@@ -13,6 +14,8 @@ from PySide6.QtWidgets import (
     QComboBox,
     QTextEdit,
     QHBoxLayout,
+    QCheckBox,
+    QMessageBox,
 )
 
 from src.config.settings_manager import SettingsManager
@@ -32,6 +35,7 @@ class AuthView(QWidget):
         self._settings_manager = settings_manager
         self._allowed_platforms: set[str] = set()
         self._is_premium_member = False
+        self._active_dialogs: list[QMessageBox] = []
 
         layout = QVBoxLayout(self)
 
@@ -78,7 +82,33 @@ class AuthView(QWidget):
             name: accessor()
             for name, accessor in self._auth_inputs.items()
         }
+
+        if credentials.get("browser_emulation"):
+            confirmation_event = threading.Event()
+            credentials["manual_auth_confirmation"] = confirmation_event
+            self._show_browser_emulation_dialog(confirmation_event)
+
         self.list_products_requested.emit(platform_name, credentials)
+
+    def _show_browser_emulation_dialog(self, confirmation_event: threading.Event) -> None:
+        dialog = QMessageBox(self)
+        dialog.setIcon(QMessageBox.Icon.Information)
+        dialog.setWindowTitle("Autenticação manual necessária")
+        dialog.setText(
+            "Complete a autenticação na plataforma, APÓS o login, clique em ok nesse diálogo"
+        )
+        dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
+        dialog.finished.connect(lambda _: confirmation_event.set())
+        dialog.finished.connect(lambda _: self._remove_dialog_reference(dialog))
+
+        self._active_dialogs.append(dialog)
+        dialog.show()
+
+    def _remove_dialog_reference(self, dialog: QMessageBox) -> None:
+        try:
+            self._active_dialogs.remove(dialog)
+        except ValueError:
+            pass
 
     def refresh_membership_state(self) -> None:
         """Reloads membership info from settings and updates the UI."""
@@ -197,6 +227,10 @@ class AuthView(QWidget):
             )
             widget = editor
             accessor = editor.get_values
+        elif field.field_type is AuthFieldType.CHECKBOX:
+            checkbox = QCheckBox()
+            widget = checkbox
+            accessor = lambda toggle=checkbox: toggle.isChecked()
         else:
             line_edit = QLineEdit()
             line_edit.setPlaceholderText(field.placeholder)
@@ -211,7 +245,7 @@ class AuthView(QWidget):
             elif isinstance(widget, QTextEdit):
                 widget.setPlaceholderText("Disponível apenas para assinantes.")
 
-            return widget, lambda: ""
+            return widget, (lambda: False if isinstance(widget, QCheckBox) else "")
 
         return widget, accessor
 
