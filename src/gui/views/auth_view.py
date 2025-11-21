@@ -1,5 +1,5 @@
 from __future__ import annotations
-
+from dataclasses import dataclass
 from typing import Any, Callable
 import threading
 
@@ -22,6 +22,12 @@ from src.config.settings_manager import SettingsManager
 from src.platforms.base import AuthField, AuthFieldType, PlatformFactory
 
 ValueAccessor = Callable[[], Any]
+
+
+@dataclass
+class AuthInputHandlers:
+    accessor: ValueAccessor
+    reset: Callable[[], None]
 
 
 class AuthView(QWidget):
@@ -69,7 +75,7 @@ class AuthView(QWidget):
 
         layout.addWidget(self.list_products_button)
 
-        self._auth_inputs: dict[str, ValueAccessor] = {}
+        self._auth_inputs: dict[str, AuthInputHandlers] = {}
 
         self.platform_combo.currentIndexChanged.connect(self._on_platform_changed)
 
@@ -79,8 +85,8 @@ class AuthView(QWidget):
         """Emits the signal to request the product list."""
         platform_name = self.platform_combo.currentText()
         credentials = {
-            name: accessor()
-            for name, accessor in self._auth_inputs.items()
+            name: handlers.accessor()
+            for name, handlers in self._auth_inputs.items()
         }
 
         if credentials.get("browser_emulation"):
@@ -185,6 +191,11 @@ class AuthView(QWidget):
             self.credentials_layout.removeRow(0)
         self._auth_inputs.clear()
 
+    def reset_auth_inputs(self) -> None:
+        """Clears the current authentication input values."""
+        for handlers in self._auth_inputs.values():
+            handlers.reset()
+
     def _build_auth_fields(self, fields: list[AuthField]) -> None:
         """Creates authentication input widgets based on the selected platform."""
         if not fields:
@@ -198,11 +209,11 @@ class AuthView(QWidget):
             if not field.required:
                 label_text = f"{label_text} (opcional)"
             label = QLabel(label_text)
-            input_widget, accessor = self._create_input_widget(field)
+            input_widget, accessor, reset = self._create_input_widget(field)
             self.credentials_layout.addRow(label, input_widget)
-            self._auth_inputs[field.name] = accessor
+            self._auth_inputs[field.name] = AuthInputHandlers(accessor, reset)
 
-    def _create_input_widget(self, field: AuthField) -> tuple[QWidget, ValueAccessor]:
+    def _create_input_widget(self, field: AuthField) -> tuple[QWidget, ValueAccessor, Callable[[], None]]:
         """Builds the widget for a single authentication field."""
         requires_premium = field.requires_membership and not self._is_premium_member
 
@@ -212,12 +223,14 @@ class AuthView(QWidget):
             line_edit.setPlaceholderText(field.placeholder)
             widget: QWidget = line_edit
             accessor = lambda line=line_edit: line.text().strip()
+            reset = line_edit.clear
         elif field.field_type is AuthFieldType.MULTILINE:
             text_edit = QTextEdit()
             text_edit.setPlaceholderText(field.placeholder)
             text_edit.setFixedHeight(max(80, text_edit.fontMetrics().lineSpacing() * 4))
             widget = text_edit
             accessor = lambda editor=text_edit: editor.toPlainText().strip()
+            reset = text_edit.clear
         elif field.field_type is AuthFieldType.KEY_VALUE_LIST:
             editor = _KeyValueEditor(
                 key_label=field.key_label,
@@ -227,15 +240,18 @@ class AuthView(QWidget):
             )
             widget = editor
             accessor = editor.get_values
+            reset = editor.reset_values
         elif field.field_type is AuthFieldType.CHECKBOX:
             checkbox = QCheckBox()
             widget = checkbox
             accessor = lambda toggle=checkbox: toggle.isChecked()
+            reset = lambda toggle=checkbox: toggle.setChecked(False)
         else:
             line_edit = QLineEdit()
             line_edit.setPlaceholderText(field.placeholder)
             widget = line_edit
             accessor = lambda line=line_edit: line.text().strip()
+            reset = line_edit.clear
 
         if requires_premium:
             widget.setEnabled(False)
@@ -245,9 +261,10 @@ class AuthView(QWidget):
             elif isinstance(widget, QTextEdit):
                 widget.setPlaceholderText("Disponível apenas para assinantes.")
 
-            return widget, (lambda: False if isinstance(widget, QCheckBox) else "")
+            empty_value = False if isinstance(widget, QCheckBox) else ""
+            return widget, (lambda: empty_value), (lambda: None)
 
-        return widget, accessor
+        return widget, accessor, reset
 
 
 class _KeyValueEditor(QWidget):
@@ -335,5 +352,12 @@ class _KeyValueEditor(QWidget):
             if key:
                 values[key] = value
         return values
+
+    def reset_values(self) -> None:
+        """Clears all rows and leaves a single empty row ready for input."""
+        for _, _, widget in list(self._rows):
+            widget.setParent(None)
+        self._rows.clear()
+        self._add_row()
 
 
