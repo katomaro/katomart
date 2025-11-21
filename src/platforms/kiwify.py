@@ -17,8 +17,7 @@ from src.platforms.playwright_token_fetcher import PlaywrightTokenFetcher
 logger = logging.getLogger(__name__)
 
 LOGIN_URL = "https://admin-api.kiwify.com.br/v1/handleAuth/login"
-KIWIFY_LOGIN_PAGE = "https://admin.kiwify.com/login"
-KIWIFY_LOGIN_PAGE_FALLBACK = "https://admin.kiwify.com.br/login"
+KIWIFY_LOGIN_PAGE = "https://admin.kiwify.com.br/login"
 COURSES_URL = "https://admin-api.kiwify.com.br/v1/viewer/schools/courses"
 SCHOOL_COURSES_URL = "https://admin-api.kiwify.com.br/v1/viewer/schools/{school_id}/courses"
 COURSE_DETAILS_URLS = [
@@ -37,14 +36,9 @@ class KiwifyTokenFetcher(PlaywrightTokenFetcher):
         return KIWIFY_LOGIN_PAGE
 
     @property
-    def login_urls(self) -> list[str]:
-        return [KIWIFY_LOGIN_PAGE, KIWIFY_LOGIN_PAGE_FALLBACK]
-
-    @property
     def target_endpoints(self) -> list[str]:
         return [
             "https://admin-api.kiwify.com.br/v1/viewer/",
-            "https://admin-api.kiwify.com/v1/viewer/",
             COURSES_URL,
         ]
 
