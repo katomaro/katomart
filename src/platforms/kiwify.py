@@ -460,10 +460,10 @@ Para usuários gratuitos: Como obter o token da Kiwify?:
 
         video_info = lesson_json.get("video") or {}
         video_url = (
-            video_info.get("stream_link_full_url")
-            or video_info.get("download_link_full_url")
-            or video_info.get("stream_link")
+            video_info.get("stream_link")
             or video_info.get("download_link")
+            or video_info.get("stream_link_full_url")
+            or video_info.get("download_link_full_url")
         )
         if isinstance(video_url, str) and video_url.startswith("/"):
             video_url = f"https://d3pjuhbfoxhm7c.cloudfront.net{video_url}"
