@@ -19,6 +19,7 @@ COURSE_DETAILS_URLS = [
     "https://admin-api.kiwify.com.br/v1/viewer/courses/{course_id}",
 ]
 LESSON_DETAILS_URL = "https://admin-api.kiwify.com/v1/viewer/courses/{course_id}/lesson/{lesson_id}"
+FILES_URL = "https://admin-api.kiwify.com.br/v1/viewer/courses/{course_id}/files/{file_id}"
 
 
 class KiwifyPlatform(BasePlatform):
@@ -296,7 +297,18 @@ Para usuários gratuitos: Como obter o token da Kiwify?:
             content.description = Description(text=description, description_type="html")
 
         video_info = lesson_json.get("video") or {}
-        video_url = video_info.get("stream_link") or video_info.get("download_link")
+        video_url = (
+            video_info.get("stream_link_full_url")
+            or video_info.get("download_link_full_url")
+            or video_info.get("stream_link")
+            or video_info.get("download_link")
+        )
+        if isinstance(video_url, str) and video_url.startswith("/"):
+            video_url = f"https://d3pjuhbfoxhm7c.cloudfront.net{video_url}"
+
+        youtube_url = lesson_json.get("youtube_video")
+        if youtube_url and not video_url:
+            video_url = youtube_url
         if video_url:
             content.videos.append(
                 Video(
@@ -332,12 +344,21 @@ Para usuários gratuitos: Como obter o token da Kiwify?:
         if not self._session:
             raise ConnectionError("The session has not been authenticated.")
 
-        if not attachment.url:
-            logging.error("Anexo sem URL disponível: %s", attachment.filename)
-            return False
-
         try:
-            response = self._session.get(attachment.url, stream=True)
+            download_url = attachment.url
+
+            if not download_url and attachment.attachment_id:
+                logging.debug("Resolvendo URL do anexo %s via API.", attachment.filename)
+                api_url = FILES_URL.format(course_id=course_id, file_id=attachment.attachment_id)
+                response = self._session.get(api_url, params={"forceDownload": "true"})
+                response.raise_for_status()
+                download_url = response.json().get("url", "")
+
+            if not download_url:
+                logging.error("Anexo sem URL disponível: %s", attachment.filename)
+                return False
+
+            response = self._session.get(download_url, stream=True)
             response.raise_for_status()
             with open(download_path, "wb") as file_handle:
                 for chunk in response.iter_content(chunk_size=8192):
