@@ -96,9 +96,21 @@ class MainWindow(QMainWindow):
         QMessageBox.warning(self, "Verificação de atualização indisponível", message)
 
     def _handle_worker_error(self, error_tuple: tuple) -> None:
-        """Logs errors from worker threads."""
+        """Logs errors from worker threads and notifies the user."""
         exctype, value, tb = error_tuple
         logging.error(f"An error occurred in a worker thread: {value}", exc_info=(exctype, value, tb))
+
+        message = str(value) or "Ocorreu um erro inesperado."
+        if exctype is ValueError and self._stacked_widget.currentWidget() is self.auth_tab_widget:
+            self.auth_view.reset_auth_inputs()
+            QMessageBox.warning(
+                self,
+                "Falha na autenticação",
+                f"{message}\n\nVerifique as credenciais e tente novamente.",
+            )
+            return
+
+        QMessageBox.critical(self, "Erro na execução", f"Ocorreu um erro: {message}")
 
     def _fetch_courses(self, platform_name: str, credentials: dict) -> None:
         """Starts a worker to fetch courses."""
