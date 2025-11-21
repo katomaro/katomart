@@ -29,5 +29,6 @@
     "max_module_name_length": 60,
     "max_lesson_name_length": 60,
     "max_file_name_length": 30,
-    "membership_email": ""
+    "membership_email": "",
+    "create_resume_summary": 
 }
