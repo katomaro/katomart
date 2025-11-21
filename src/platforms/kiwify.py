@@ -237,12 +237,12 @@ Para usuários gratuitos: Como obter o token da Kiwify?:
             lessons: List[Dict[str, Any]] = []
             for lesson_index, lesson in enumerate(lessons_iterable, start=1):
                 lesson_id = lesson.get("id") if isinstance(lesson, dict) else str(lesson)
-                lesson_title = lesson.get("title") or lesson.get("name") if isinstance(lesson, dict) else str(lesson)
+                lesson_title = self._extract_lesson_title(lesson) or f"Aula {lesson_index}"
                 lesson_order = lesson.get("order", lesson_index) if isinstance(lesson, dict) else lesson_index
                 lessons.append(
                     {
                         "id": lesson_id,
-                        "title": lesson_title or f"Aula {lesson_index}",
+                        "title": lesson_title,
                         "order": lesson_order,
                         "locked": False,
                     }
@@ -263,6 +263,18 @@ Para usuários gratuitos: Como obter o token da Kiwify?:
             )
 
         return modules
+
+    def _extract_lesson_title(self, lesson: Any) -> str:
+        if not isinstance(lesson, dict):
+            return str(lesson)
+
+        for key in ("title", "name", "ref"):
+            value = lesson.get(key)
+            if value:
+                return str(value)
+
+        lesson_id = lesson.get("id")
+        return str(lesson_id) if lesson_id else ""
 
     def fetch_lesson_details(self, lesson: Dict[str, Any], course_slug: str, course_id: str, module_id: str) -> LessonContent:
         if not self._session:
