@@ -34,6 +34,9 @@ class YtdlpDownloader(BaseDownloader):
             'outtmpl': str(download_path),
             'noplaylist': True,
             'concurrent_fragment_downloads': max(1, self.settings.max_concurrent_segment_downloads),
+            'quiet': True,
+            'no_warnings': True,
+            'progress': True,
             **retry_opts,
         }
         try:

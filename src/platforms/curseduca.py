@@ -147,7 +147,9 @@ Para plataformas whitelabel Curseduca:
 
         api_key_response = self._session.get(LOGIN_DISCOVERY_URL, headers=headers)
         api_key_response.raise_for_status()
-        api_key = api_key_response.json().get("key")
+        discovery_payload = api_key_response.json()
+        logging.debug("Curseduca discovery payload: %s", discovery_payload)
+        api_key = discovery_payload.get("key")
         if not api_key:
             raise ValueError("Não foi possível obter a chave da plataforma.")
 
@@ -184,6 +186,7 @@ Para plataformas whitelabel Curseduca:
         )
         login_response.raise_for_status()
         auth_data = login_response.json()
+        logging.debug("Curseduca login response: %s", auth_data)
 
         self._access_token = auth_data.get("accessToken", "")
         member = auth_data.get("member", {})
@@ -225,6 +228,8 @@ Para plataformas whitelabel Curseduca:
             )
             response.raise_for_status()
 
+            logging.debug("Curseduca course list page %s content length: %s", page, len(response.text))
+
             soup = BeautifulSoup(response.text, "html.parser")
             page_courses: List[Dict[str, Any]] = []
             for card in soup.select("div.classified"):
@@ -257,10 +262,13 @@ Para plataformas whitelabel Curseduca:
 
             response = self._session.get(course_url)
             response.raise_for_status()
+            logging.debug("Curseduca course page fetched: %s", course_url)
             course_data = _extract_next_data(response.text)
             if not course_data:
                 logging.warning("Não foi possível extrair dados para o curso %s", course.get("name"))
                 continue
+
+            logging.debug("Curseduca course payload for %s: %s", course.get("name"), course_data)
 
             simplified = _simplify_course_structure(course_data)
             course_entry = course.copy()
@@ -282,6 +290,7 @@ Para plataformas whitelabel Curseduca:
         response = self._session.get(LESSON_WATCH_URL.format(lesson_uuid=lesson_uuid), headers=headers)
         response.raise_for_status()
         lesson_json = response.json()
+        logging.debug("Curseduca lesson %s details: %s", lesson_uuid, lesson_json)
 
         content = LessonContent()
         if description_html := lesson_json.get("description"):

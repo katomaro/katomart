@@ -1,19 +1,23 @@
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import requests
+from playwright.async_api import Page
 
 from src.app.api_service import ApiService
 from src.app.models import Attachment, Description, LessonContent, Video
 from src.config.settings_manager import SettingsManager
 from src.platforms.base import AuthField, AuthFieldType, BasePlatform, PlatformFactory
+from src.platforms.playwright_token_fetcher import PlaywrightTokenFetcher
 
 logger = logging.getLogger(__name__)
 
 LOGIN_URL = "https://admin-api.kiwify.com.br/v1/handleAuth/login"
+KIWIFY_LOGIN_PAGE = "https://admin.kiwify.com.br/login"
 COURSES_URL = "https://admin-api.kiwify.com.br/v1/viewer/schools/courses"
 SCHOOL_COURSES_URL = "https://admin-api.kiwify.com.br/v1/viewer/schools/{school_id}/courses"
 COURSE_DETAILS_URLS = [
@@ -24,11 +28,60 @@ LESSON_DETAILS_URL = "https://admin-api.kiwify.com/v1/viewer/courses/{course_id}
 FILES_URL = "https://admin-api.kiwify.com.br/v1/viewer/courses/{course_id}/files/{file_id}"
 
 
+class KiwifyTokenFetcher(PlaywrightTokenFetcher):
+    """Automates Kiwify login with a real browser to capture the bearer token."""
+
+    @property
+    def login_url(self) -> str:
+        return KIWIFY_LOGIN_PAGE
+
+    @property
+    def target_endpoints(self) -> list[str]:
+        return [
+            "https://admin-api.kiwify.com.br/v1/viewer/",
+            COURSES_URL,
+        ]
+
+    async def dismiss_cookie_banner(self, page: Page) -> None:  # pragma: no cover - UI dependent
+        cookies_button = page.get_by_role(
+            "button", name=re.compile("aceitar|accept|ok", re.IGNORECASE)
+        )
+        try:
+            if await cookies_button.count():
+                await cookies_button.first.click()
+        except Exception:
+            return
+
+    async def fill_credentials(self, page: Page, username: str, password: str) -> None:
+        email_selector = "input[type='email'], input[name='email'], input[name='username']"
+        password_selector = "input[type='password'], input[name='password']"
+
+        await page.wait_for_selector(email_selector)
+        await page.fill(email_selector, username)
+
+        await page.wait_for_selector(password_selector)
+        await page.fill(password_selector, password)
+
+    async def submit_login(self, page: Page) -> None:
+        for selector in (
+            "button[type='submit']",
+            "button:has-text('Entrar')",
+            "button:has-text('Login')",
+        ):
+            try:
+                await page.click(selector, timeout=2000)
+                return
+            except Exception:
+                continue
+        await page.press("body", "Enter")
+
+
 class KiwifyPlatform(BasePlatform):
     """Implements the Kiwify platform using the shared platform interface."""
 
     def __init__(self, api_service: ApiService, settings_manager: SettingsManager):
         super().__init__(api_service, settings_manager)
+        self._token_fetcher = KiwifyTokenFetcher()
 
     @classmethod
     def auth_fields(cls) -> List[AuthField]:
@@ -52,6 +105,22 @@ Para usuários gratuitos: Como obter o token da Kiwify?:
         self._configure_session(token)
 
     def _exchange_credentials_for_token(self, username: str, password: str, credentials: Dict[str, Any]) -> str:
+        use_browser_emulation = bool(credentials.get("browser_emulation"))
+        confirmation_event = credentials.get("manual_auth_confirmation")
+
+        if use_browser_emulation:
+            try:
+                return self._token_fetcher.fetch_token(
+                    username,
+                    password,
+                    headless=False,
+                    wait_for_user_confirmation=(confirmation_event.wait if confirmation_event else None),
+                )
+            except Exception as exc:
+                raise ConnectionError(
+                    "Falha ao obter o token da Kiwify via emulação de navegador. Revise as credenciais ou a interação de 2FA/Captcha."
+                ) from exc
+
         try:
             response = requests.post(
                 LOGIN_URL,
@@ -61,6 +130,7 @@ Para usuários gratuitos: Como obter o token da Kiwify?:
             )
             response.raise_for_status()
             data = response.json()
+            logger.debug("Kiwify authentication payload: %s", data)
             token = data.get("idToken")
             if not token:
                 raise ValueError("Resposta de autenticação não retornou token.")
@@ -118,6 +188,7 @@ Para usuários gratuitos: Como obter o token da Kiwify?:
             response = self._session.get(url)
             response.raise_for_status()
             data = response.json()
+            logger.debug("Kiwify courses page %s payload (%s): %s", page_counter, url, data)
 
             if school_listing:
                 items = data.get("my_courses", [])
@@ -179,6 +250,7 @@ Para usuários gratuitos: Como obter o token da Kiwify?:
 
             logger.debug("Kiwify: buscando detalhes do curso %s", course_id)
             details = self._get_course_details(str(course_id))
+            logger.debug("Kiwify course %s details payload: %s", course_id, details)
             logger.debug("Kiwify: detalhes crus do curso %s (tipo=%s): %r", course_id, type(details), details)
 
             if not details:
@@ -377,6 +449,7 @@ Para usuários gratuitos: Como obter o token da Kiwify?:
         response = self._session.get(url)
         response.raise_for_status()
         lesson_json = response.json().get("lesson", {})
+        logger.debug("Kiwify lesson %s payload: %s", lesson_id, lesson_json)
 
         content = LessonContent()
 
