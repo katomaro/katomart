@@ -96,7 +96,9 @@ class PlaywrightTokenFetcher(ABC):
                 for candidate in self.login_urls:
                     try:
                         await page.goto(candidate, wait_until="domcontentloaded")
-                        await page.wait_for_load_state("networkidle")
+                        await page.wait_for_load_state(
+                            "networkidle", timeout=self.network_idle_timeout_ms
+                        )
                         break
                     except BaseException as exc:
                         navigation_error = exc
