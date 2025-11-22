@@ -102,7 +102,16 @@ class MainWindow(QMainWindow):
     def _handle_worker_error(self, error_tuple: tuple) -> None:
         """Logs errors from worker threads and notifies the user."""
         exctype, value, tb = error_tuple
-        logging.error(f"An error occurred in a worker thread: {value}", exc_info=(exctype, value, tb))
+
+        if isinstance(tb, str):
+            logging.error(
+                "An error occurred in a worker thread: %s\n%s", value, tb
+            )
+        else:
+            logging.error(
+                f"An error occurred in a worker thread: {value}",
+                exc_info=(exctype, value, tb),
+            )
 
         message = str(value) or "Ocorreu um erro inesperado."
         if exctype is ValueError and self._stacked_widget.currentWidget() is self.auth_tab_widget:

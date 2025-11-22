@@ -96,26 +96,23 @@ class ResumeManager:
         module_progress = modules.setdefault(module_key, {})
         lessons = module_progress.setdefault("lessons", {})
 
+        has_description = bool(lesson_details.description)
+        has_auxiliary = bool(lesson_details.auxiliary_urls)
+
         lesson_entry = lessons.setdefault(
             lesson_key,
             {
-                "description": True,
-                "auxiliary_urls": True,
+                "description": not has_description,
+                "auxiliary_urls": not has_auxiliary,
                 "videos": {},
                 "attachments": {},
             },
         )
 
-        lesson_entry["description"] = (
-            lesson_entry.get("description", False)
-            if lesson_details.description
-            else True
-        )
-        lesson_entry["auxiliary_urls"] = (
-            lesson_entry.get("auxiliary_urls", False)
-            if lesson_details.auxiliary_urls
-            else True
-        )
+        if "description" not in lesson_entry:
+            lesson_entry["description"] = not has_description
+        if "auxiliary_urls" not in lesson_entry:
+            lesson_entry["auxiliary_urls"] = not has_auxiliary
 
         for video in lesson_details.videos:
             video_key = str(video.video_id or video.order)
@@ -143,7 +140,8 @@ class ResumeManager:
         course_progress = progress.setdefault(str(course_id), {}).setdefault("modules", {})
         module_progress = course_progress.setdefault(module_key, {}).setdefault("lessons", {})
         lesson_entry = module_progress.setdefault(
-            lesson_key, {"description": True, "auxiliary_urls": True, "videos": {}, "attachments": {}}
+            lesson_key,
+            {"description": False, "auxiliary_urls": False, "videos": {}, "attachments": {}},
         )
 
         if category in {"videos", "attachments"} and item_key is not None:
