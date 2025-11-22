@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
+from urllib.parse import urljoin
 from typing import Any, Dict, List, Optional
 
 import requests
@@ -459,19 +460,21 @@ Para usuários gratuitos: Como obter o token da Kiwify?:
             content.description = Description(text=description, description_type="html")
 
         video_info = lesson_json.get("video") or {}
-        video_url = (
-            video_info.get("stream_link")
-            or video_info.get("download_link")
-            or video_info.get("stream_link_full_url")
-            or video_info.get("download_link_full_url")
-        )
-        if isinstance(video_url, str) and video_url.startswith("/"):
-            video_url = f"https://d3pjuhbfoxhm7c.cloudfront.net{video_url}"
+        stream_link = video_info.get("stream_link") or video_info.get("stream_link_full_url")
+        download_link = video_info.get("download_link") or video_info.get("download_link_full_url")
 
+        if isinstance(stream_link, str) and stream_link.startswith("/"):
+            stream_link = f"https://d3pjuhbfoxhm7c.cloudfront.net{stream_link}"
+        if isinstance(download_link, str) and download_link.startswith("/"):
+            download_link = f"https://d3pjuhbfoxhm7c.cloudfront.net{download_link}"
+
+        video_url = stream_link or download_link
+        
         youtube_url = lesson_json.get("youtube_video")
         if youtube_url and not video_url:
             video_url = youtube_url
         if video_url:
+            video_url = self._select_stream_by_quality(video_url, download_link)
             content.videos.append(
                 Video(
                     video_id=str(video_info.get("id", lesson_id)),
@@ -499,6 +502,81 @@ Para usuários gratuitos: Como obter o token da Kiwify?:
             )
 
         return content
+
+    def _select_stream_by_quality(self, stream_url: str, download_url: str | None = None) -> str:
+        """Resolve master playlists to a specific quality based on settings."""
+
+        if not self._session or not stream_url or not stream_url.endswith(".m3u8"):
+            return stream_url
+
+        try:
+            response = self._session.get(stream_url)
+            response.raise_for_status()
+        except Exception as exc:  # pragma: no cover - network dependent
+            logger.debug("Kiwify: falha ao obter playlist master %s: %s", stream_url, exc)
+            return stream_url
+
+        lines = response.text.splitlines()
+        variants: List[tuple[int | None, str]] = []
+
+        for idx, line in enumerate(lines):
+            if not line.startswith("#EXT-X-STREAM-INF"):
+                continue
+
+            height: int | None = None
+            match = re.search(r"RESOLUTION=\d+x(\d+)", line)
+            if match:
+                try:
+                    height = int(match.group(1))
+                except ValueError:
+                    height = None
+
+            if idx + 1 < len(lines):
+                uri = lines[idx + 1].strip()
+                if uri and not uri.startswith("#"):
+                    variants.append((height, urljoin(stream_url, uri)))
+
+        if not variants:
+            logger.debug("Kiwify: playlist master sem variações, usando URL original.")
+            return download_url or stream_url
+
+        quality_preference = self._settings.video_quality
+
+        def extract_height(entry: tuple[int | None, str]) -> int:
+            variant_height, variant_url = entry
+            if variant_height:
+                return variant_height
+            derived = re.search(r"(\d{3,4})p", variant_url)
+            return int(derived.group(1)) if derived else 0
+
+        sorted_variants = sorted(variants, key=extract_height, reverse=True)
+
+        if quality_preference == "Mais baixa":
+            chosen = sorted_variants[-1]
+        elif quality_preference == "Mais alta":
+            chosen = sorted_variants[0]
+        else:
+            try:
+                target_height = int(str(quality_preference).replace("p", ""))
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Kiwify: configuração de qualidade inválida '%s', usando a mais alta.",
+                    quality_preference,
+                )
+                return sorted_variants[0][1]
+
+            chosen = sorted_variants[-1]
+            for variant in sorted_variants:
+                if extract_height(variant) <= target_height:
+                    chosen = variant
+                    break
+
+        logger.debug(
+            "Kiwify: selecionada variante %sp para URL %s",
+            extract_height(chosen),
+            chosen[1],
+        )
+        return chosen[1]
 
     def download_attachment(
         self, attachment: Attachment, download_path: Path, course_slug: str, course_id: str, module_id: str
