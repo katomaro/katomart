@@ -1,6 +1,6 @@
 {
     "download_path": "./downloads",
-    "video_quality": "1080p",
+    "video_quality": "Mais alta",
     "max_concurrent_segment_downloads": 1,
     "timeout_seconds": 30,
     "download_subtitles": true,
@@ -25,10 +25,10 @@
     "whisper_model": "base",
     "whisper_language": "auto",
     "whisper_output_format": "srt",
-    "max_course_name_length": 10,
+    "max_course_name_length": 60,
     "max_module_name_length": 60,
     "max_lesson_name_length": 60,
     "max_file_name_length": 30,
     "membership_email": "",
-    "create_resume_summary": 
+    "create_resume_summary": false
 }
