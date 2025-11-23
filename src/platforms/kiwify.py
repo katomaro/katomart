@@ -475,7 +475,6 @@ Para usuários gratuitos: Como obter o token da Kiwify?:
             video_url = youtube_url
         if video_url:
             video_url = self._select_stream_by_quality(video_url, download_link)
-            logger.debug("Kiwify: URL final utilizada para download: %s", video_url)
             content.videos.append(
                 Video(
                     video_id=str(video_info.get("id", lesson_id)),
@@ -507,17 +506,15 @@ Para usuários gratuitos: Como obter o token da Kiwify?:
     def _select_stream_by_quality(self, stream_url: str, download_url: str | None = None) -> str:
         """Resolve master playlists to a specific quality based on settings."""
 
-        if not self._session or not stream_url:
-            return download_url or stream_url
-        if ".m3u8" not in stream_url:
-            return download_url or stream_url
+        if not self._session or not stream_url or not stream_url.endswith(".m3u8"):
+            return stream_url
 
         try:
             response = self._session.get(stream_url)
             response.raise_for_status()
         except Exception as exc:  # pragma: no cover - network dependent
             logger.debug("Kiwify: falha ao obter playlist master %s: %s", stream_url, exc)
-            return download_url or stream_url
+            return stream_url
 
         lines = response.text.splitlines()
         variants: List[tuple[int | None, str]] = []
