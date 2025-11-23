@@ -25,5 +25,7 @@ class DownloaderFactory:
             return YtdlpDownloader(settings_manager)
         elif "cf-embed.play.hotmart.com" in url:
             return HotmartDownloader(settings_manager)
+        elif ".m3u8" in url:
+            return YtdlpDownloader(settings_manager)
         else:
             return RequestsDownloader(settings_manager)
