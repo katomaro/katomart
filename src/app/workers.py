@@ -529,7 +529,7 @@ class DownloadWorker(QRunnable):
 
                                         if normalized:
                                             for emb_idx, emb_url in enumerate(normalized, start=1):
-                                                emb_name = f"{emb_idx}. Aula"
+                                                emb_name = f"{emb_idx}. e_Aula"
                                                 emb_name = truncate_filename_preserve_ext(emb_name, getattr(self.settings, 'max_file_name_length', 30))
                                                 emb_path = lesson_path / emb_name
                                                 logging.info(f"Baixando vídeo linkado '{emb_url}' para '{emb_path}'")
