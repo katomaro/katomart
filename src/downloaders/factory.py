@@ -31,4 +31,5 @@ class DownloaderFactory:
         elif ".m3u8" in url:
             return YtdlpDownloader(settings_manager)
         else:
-            return RequestsDownloader(settings_manager)
+            return YtdlpDownloader(settings_manager)
+            # return RequestsDownloader(settings_manager)  # Fallback to RequestsDownloader for direct file links, needs better URL detection
