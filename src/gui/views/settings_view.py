@@ -15,10 +15,12 @@ from PySide6.QtWidgets import (
     QLabel,
     QMessageBox,
     QScrollArea,
+    QTextEdit,
 )
 
 from src.app.membership_service import MembershipService
 from src.config.settings_manager import AppSettings, SettingsManager
+from urllib.parse import urlparse
 
 
 class SettingsView(QWidget):
@@ -317,6 +319,14 @@ class SettingsView(QWidget):
         self._paid_form_layout.addRow(
             "Formato da Transcrição:", self.whisper_output_format_combo
         )
+        self.embed_blacklist_edit = QTextEdit()
+        self.embed_blacklist_edit.setPlaceholderText("example.com\ndocs.example.com\n...")
+        self.embed_blacklist_edit.setFixedHeight(100)
+        self.embed_blacklist_edit.setToolTip(
+            "Insira um domínio por linha. Use apenas o hostname (ex: example.com ou docs.example.com).\n"
+            "Não inclua 'http(s)://' nem caminhos. Subdomínios também serão verificados (ex: 'docs.example.com' influenciará 'sub.docs.example.com')."
+        )
+        self._paid_form_layout.addRow("Domínios Ignorados para Embeds (um por linha):", self.embed_blacklist_edit)
         self._paid_form_layout.addRow(self.paid_status_label)
 
         paid_group = QGroupBox("Configurações Pagas")
@@ -397,6 +407,21 @@ class SettingsView(QWidget):
 
         self._update_whisper_fields_state(settings.use_whisper_transcription)
         self._update_paid_settings_state(settings)
+        try:
+            normalized = []
+            for entry in (settings.embed_domain_blacklist or []):
+                try:
+                    p = urlparse(entry.strip())
+                    host = (p.netloc or p.path or "").lower().strip()
+                except Exception:
+                    host = entry.strip().lower()
+                if host.startswith("www."):
+                    host = host[4:]
+                if host:
+                    normalized.append(host)
+            self.embed_blacklist_edit.setPlainText("\n".join(normalized))
+        except Exception:
+            self.embed_blacklist_edit.setPlainText("")
 
     def save_settings(self) -> None:
         """Saves the current UI settings back to the file."""
@@ -437,6 +462,14 @@ class SettingsView(QWidget):
             allowed_platforms=list(current_settings.allowed_platforms),
             is_premium_member=current_settings.is_premium_member,
             download_embedded_videos=self.download_embedded_check.isChecked(),
+            embed_domain_blacklist=[
+                # sanitize entries: remove scheme, paths, lowercase, strip www.
+                (lambda s: (lambda h: h[4:] if h.startswith('www.') else h)(
+                    (urlparse(s.strip()).netloc or urlparse(s.strip()).path or '').lower().strip()
+                ))(line)
+                for line in self.embed_blacklist_edit.toPlainText().splitlines()
+                if line.strip()
+            ],
             permissions=list(current_settings.permissions),
             has_full_permissions=current_settings.has_full_permissions,
         )
