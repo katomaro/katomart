@@ -12,7 +12,6 @@ from PySide6.QtCore import QObject, QRunnable, Signal
 from src.platforms.base import BasePlatform
 from src.config.settings_manager import SettingsManager
 from src.downloaders.factory import DownloaderFactory
-from src.downloaders.ytdlp_downloader import YtdlpDownloader
 from src.utils.resume_manager import ResumeManager
 
 from src.utils.filesystem import sanitize_path_component
@@ -533,7 +532,7 @@ class DownloadWorker(QRunnable):
                                                 emb_name = truncate_filename_preserve_ext(emb_name, getattr(self.settings, 'max_file_name_length', 30))
                                                 emb_path = lesson_path / emb_name
                                                 logging.info(f"Baixando vídeo linkado '{emb_url}' para '{emb_path}'")
-                                                downloader = YtdlpDownloader(self.settings_manager)
+                                                downloader = DownloaderFactory.get_downloader(emb_url, self.settings_manager)
                                                 try:
                                                     self._run_with_retries(
                                                         lambda: downloader.download_video(
