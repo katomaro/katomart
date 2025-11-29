@@ -31,6 +31,16 @@ class AppSettings:
     run_ffmpeg: bool = False
     ffmpeg_args: str = "-c copy"
     download_embedded_videos: bool = True
+    embed_domain_blacklist: list[str] = field(default_factory=lambda: [
+        "docs.google.com",
+        "drive.google.com",
+        "facebook.com",
+        "instagram.com",
+        "twitter.com",
+        "linkedin.com",
+        "pinterest.com",
+        "imgur.com",
+    ])
     use_whisper_transcription: bool = False
     whisper_model: str = "base"
     whisper_language: str = "auto"

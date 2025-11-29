@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 
 import requests
 from PySide6.QtCore import QObject, QRunnable, Signal
+from urllib.parse import urlparse
 
 from src.platforms.base import BasePlatform
 from src.config.settings_manager import SettingsManager
@@ -532,6 +533,25 @@ class DownloadWorker(QRunnable):
                                                 emb_name = truncate_filename_preserve_ext(emb_name, getattr(self.settings, 'max_file_name_length', 30))
                                                 emb_path = lesson_path / emb_name
                                                 logging.info(f"Baixando vídeo linkado '{emb_url}' para '{emb_path}'")
+                                                try:
+                                                    parsed_emb = urlparse(emb_url)
+                                                    emb_domain = (parsed_emb.netloc or "").lower()
+                                                    if emb_domain.startswith("www."):
+                                                        emb_domain = emb_domain[4:]
+                                                except Exception:
+                                                    emb_domain = ""
+
+                                                blacklist: List[str] = getattr(self.settings, "embed_domain_blacklist", []) or []
+                                                is_blacklisted = any(
+                                                    emb_domain == b or emb_domain.endswith("." + b)
+                                                    for b in blacklist
+                                                )
+                                                if is_blacklisted:
+                                                    self.signals.result.emit(
+                                                        f"    - [PULADO] URL embed blacklist: {emb_url}"
+                                                    )
+                                                    continue
+
                                                 downloader = DownloaderFactory.get_downloader(emb_url, self.settings_manager)
                                                 try:
                                                     self._run_with_retries(
