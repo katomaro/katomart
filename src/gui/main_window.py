@@ -60,8 +60,8 @@ class MainWindow(QMainWindow):
     def _show_subscription_prompt(self) -> None:
         """Displays a pop-up encouraging the monthly subscription."""
         message = (
-            "Manter um Software desse nível \u00e9 um trabalho duro e custoso, que exige muito tempo e estudo, além de acessos legítimos em plataformas. "
-            "Com uma assinatura mensal de apenas R$5, você pode ajudar a manter o Katomar! ativo e em constante melhoria, além de desbloquear funções extras e poderosas.\n\n"
+            "Manter um Software desse nível \u00e9 um trabalho extensivo e custoso, que exige muito tempo e estudo, além de acessos legítimos em plataformas. "
+            "Com uma assinatura mensal de apenas R$5, você pode ajudar a manter o Katomart! ativo e em constante melhoria, além de desbloquear funções extras e poderosas.\n\n"
             "Visite https://katomaro.com/assinaturas e conhe\u00e7a os benefícios."
         )
         QMessageBox.information(self, "Suporte o Katomart!", message)
