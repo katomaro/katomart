@@ -19,15 +19,16 @@ class BaseDownloader(ABC):
         self.settings_manager = settings_manager
 
     @abstractmethod
-    def download_video(self, url: str, session: requests.Session) -> bool:
+    def download_video(self, url: str, session: requests.Session, download_path: Path) -> bool:
         """
-        Downloads a video from a given URL.
+        Downloads a video from a given URL and saves it to `download_path`.
 
         Args:
             url (str): The URL of the video to download.
             session (requests.Session): The requests session to use for downloading.
+            download_path (Path): The destination file or template for the download.
 
         Returns:
             bool: True if the download was successful, False otherwise.
         """
-        pass
+        raise NotImplementedError()

@@ -2,6 +2,7 @@ from .base import BaseDownloader
 from .ytdlp_downloader import YtdlpDownloader
 from .hotmart_video_downloader import HotmartDownloader
 from .requests_downloader import RequestsDownloader
+from .pandavideo_downloader import PandaVideoDownloader
 from src.config.settings_manager import SettingsManager
 
 class DownloaderFactory:
@@ -25,6 +26,8 @@ class DownloaderFactory:
             return YtdlpDownloader(settings_manager)
         elif "cf-embed.play.hotmart.com" in url:
             return HotmartDownloader(settings_manager)
+        elif "pandavideo.com" in url:
+            return PandaVideoDownloader(settings_manager)
         elif ".m3u8" in url:
             return YtdlpDownloader(settings_manager)
         else:
