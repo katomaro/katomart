@@ -1,0 +1,17 @@
+# Reference parsers
+old/
+downloads/
+
+# Python cache files
+__pycache__/
+*.py[cod]
+
+# Debug / Logs
+debug_*
+*.log
+logs/
+
+# Venv
+.venv/
+venv/
+env/
