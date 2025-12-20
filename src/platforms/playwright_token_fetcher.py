@@ -48,6 +48,7 @@ class PlaywrightTokenFetcher(ABC):
         password: str,
         *,
         headless: bool = True,
+        user_agent: Optional[str] = None,
         wait_for_user_confirmation: Optional[Callable[[], None]] = None,
     ) -> str:
         """
@@ -65,6 +66,7 @@ class PlaywrightTokenFetcher(ABC):
                     username,
                     password,
                     headless=headless,
+                    user_agent=user_agent,
                     wait_for_user_confirmation=wait_for_user_confirmation,
                 )
             )
@@ -73,6 +75,7 @@ class PlaywrightTokenFetcher(ABC):
             username,
             password,
             headless=headless,
+            user_agent=user_agent,
             wait_for_user_confirmation=wait_for_user_confirmation,
         )
 
@@ -82,13 +85,20 @@ class PlaywrightTokenFetcher(ABC):
         password: str,
         *,
         headless: bool = True,
+        user_agent: Optional[str] = None,
         wait_for_user_confirmation: Optional[Callable[[], None]] = None,
     ) -> str:
         manual_login = not (username and password)
 
         async with async_playwright() as playwright:
-            browser = await playwright.chromium.launch(headless=headless)
-            page = await browser.new_page()
+            # Nao alterar essas flags, responsaveis por tentar burlar a deteccao de automacao do playwright
+            args = ["--disable-blink-features=AutomationControlled"]
+            browser = await playwright.chromium.launch(headless=headless, args=args)
+            ua_to_use = user_agent or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            context = await browser.new_context(user_agent=ua_to_use)
+            await context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+            
+            page = await context.new_page()
 
             try:
                 navigation_error: BaseException | None = None
@@ -138,6 +148,7 @@ class PlaywrightTokenFetcher(ABC):
         password: str,
         *,
         headless: bool,
+        user_agent: Optional[str],
         wait_for_user_confirmation: Optional[Callable[[], None]],
     ) -> str:
         result: list[str] = []
@@ -152,6 +163,7 @@ class PlaywrightTokenFetcher(ABC):
                             username,
                             password,
                             headless=headless,
+                            user_agent=user_agent,
                             wait_for_user_confirmation=wait_for_user_confirmation,
                         )
                     )

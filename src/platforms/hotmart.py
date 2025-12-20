@@ -125,12 +125,14 @@ Para usuários gratuitos: Como obter o token da Hotmart?:
         """Automates the Hotmart login flow to capture the bearer token."""
         use_browser_emulation = bool(credentials.get("browser_emulation"))
         confirmation_event = credentials.get("manual_auth_confirmation")
+        custom_ua = self._settings.user_agent
 
         try:
             return self._token_fetcher.fetch_token(
                 username,
                 password,
                 headless=not use_browser_emulation,
+                user_agent=custom_ua,
                 wait_for_user_confirmation=(
                     confirmation_event.wait if confirmation_event else None
                 ),
