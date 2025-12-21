@@ -588,9 +588,15 @@ class DownloadWorker(QRunnable):
                                     continue
 
                                 try:
+                                    import inspect
+                                    sig = inspect.signature(downloader.download_video)
+                                    kwargs = {}
+                                    if 'extra_props' in sig.parameters:
+                                        kwargs['extra_props'] = getattr(video, 'extra_props', {})
+
                                     self._run_with_retries(
                                         lambda: downloader.download_video(
-                                            video.url, self.platform.get_session(), video_path
+                                            video.url, self.platform.get_session(), video_path, **kwargs
                                         ),
                                         description=f"Download do vídeo '{video_name}'",
                                     )

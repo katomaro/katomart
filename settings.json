@@ -11,7 +11,7 @@
     "download_retry_attempts": 0,
     "download_retry_delay_seconds": 60,
     "download_widevine": false,
-    "cdm_path": "",
+    "cdm_path": "./cdm",
     "use_http_proxy": false,
     "proxy_address": "",
     "proxy_username": "",

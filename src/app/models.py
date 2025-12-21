@@ -26,6 +26,7 @@ class Video:
     title: str
     size: int
     duration: int
+    extra_props: dict = field(default_factory=dict)
     
 @dataclass
 class Attachment:

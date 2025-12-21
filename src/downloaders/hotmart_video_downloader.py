@@ -1,11 +1,21 @@
 import json
 import logging
+import re
+import subprocess
+import os
+import shutil
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse, parse_qs
+from base64 import b64decode
 
 import requests
 import yt_dlp
 from bs4 import BeautifulSoup
+from pywidevine.cdm import Cdm
+from pywidevine.device import Device
+from pywidevine.pssh import PSSH
 
 from .base import BaseDownloader
 from src.config.settings_manager import AppSettings, SettingsManager
@@ -39,6 +49,16 @@ class HotmartDownloader(BaseDownloader):
 
     def _select_best_asset(self, assets: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         """Selects the best video asset based on settings."""
+        
+        # DASH na htm é mais rápido que m3u8 lol
+        if self.settings.download_widevine:
+            dash_assets = [
+                a for a in assets 
+                if a.get('contentType') == 'application/dash+xml' and a.get('url')
+            ]
+            if dash_assets:
+                return dash_assets[0]
+
         video_assets = [
             a for a in assets 
             if a.get('contentType') == 'application/x-mpegURL' and a.get('url')
@@ -82,7 +102,75 @@ class HotmartDownloader(BaseDownloader):
 
             return best_match or min(video_assets, key=lambda a: int(a.get('height', 0)))
 
-    def download_video(self, url: str, session: requests.Session, download_path: Path) -> bool:
+    def _extract_pssh(self, mpd_content: str) -> Optional[str]:
+        """Extracts the PSSH value from the MPD content."""
+        try:
+            pssh_match = re.search(r'<(?:[a-zA-Z0-9]+:)?pssh[^>]*>(.*?)</(?:[a-zA-Z0-9]+:)?pssh>', mpd_content, re.DOTALL | re.IGNORECASE)
+            
+            if pssh_match:
+                return pssh_match.group(1).strip()
+
+            return None
+        except Exception as e:
+            logging.error(f"Error extracting PSSH: {e}")
+            return None
+
+    def _get_license_keys(self, pssh: str, license_url: str, session: requests.Session, membership_code: str) -> Optional[List[str]]:
+        """Obtains the decryption keys from the license server."""
+        try:
+            cdm_path = Path(self.settings.cdm_path)
+            wvd_file = next(cdm_path.glob("*.wvd"), None)
+            
+            if wvd_file:
+                device = Device.load(str(wvd_file))
+            else:
+                logging.error("Arquivo .wvd não encontrado para descriptografia, .bin e .pem serão implementados depois, gere um .wvd.")
+                return None
+
+            cdm = Cdm.from_device(device)
+            
+            pssh_bytes = b64decode(pssh)
+            pssh_obj = PSSH(pssh_bytes)
+            session_id = cdm.open()
+            challenge = cdm.get_license_challenge(session_id, pssh_obj)
+
+            headers = {
+                "User-Agent": self.settings.user_agent,
+                "Accept": "*/*",
+                "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+                "Content-type": "application/octet-stream",
+                "keySystem": "com.widevine.alpha",
+                "membership": membership_code,
+                "Origin": "https://cf-embed.play.hotmart.com",
+                "Referer": "https://cf-embed.play.hotmart.com/",
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "same-site",
+            }
+
+            logging.debug(f"Enviando challenge para: {license_url}")
+            response = session.post(license_url, data=challenge, headers=headers)
+            
+            if response.status_code != 200:
+                logging.error(f"Erro ao obter licença: {response.status_code} - {response.text}")
+                cdm.close(session_id)
+                return None
+
+            cdm.parse_license(session_id, response.content)
+            
+            keys = []
+            for key in cdm.get_keys(session_id):
+                if key.type == 'CONTENT':
+                    keys.append(f"{key.kid.hex}:{key.key.hex()}")
+            
+            cdm.close(session_id)
+            return keys
+
+        except Exception as e:
+            logging.error(f"Erro durante o processo de obtenção de chaves: {e}", exc_info=True)
+            return None
+
+    def download_video(self, url: str, session: requests.Session, download_path: Path, extra_props: Optional[Dict[str, Any]] = None) -> bool:
         """
         Downloads a video from a Hotmart embedded player URL.
         """
@@ -107,12 +195,173 @@ class HotmartDownloader(BaseDownloader):
                 logging.error("No suitable video assets found in media assets.")
                 return False
             
-            m3u8_url = video_asset.get('url')
-            if not m3u8_url:
+            video_url = video_asset.get('url')
+            if not video_url:
                 logging.error("Selected video asset does not have a 'url'.")
                 return False
 
-            logging.debug(f"Selected video asset with quality {video_asset.get('height')}p. URL: {m3u8_url}")
+            if '/drm/' in video_url:
+                if not self.settings.download_widevine:
+                    logging.error("VIDEO CRIPTOGRAFADO, REQUER CDM (download_widevine=False)")
+                    return False
+
+                cdm_path = Path(self.settings.cdm_path)
+                if not cdm_path.exists() or not cdm_path.is_dir():
+                    logging.error(f"Pasta CDM não encontrada ou inválida: {self.settings.cdm_path}")
+                    return False
+
+                wvd_file = next(cdm_path.glob("*.wvd"), None)
+                if not wvd_file:
+                    bin_files = list(cdm_path.glob("*.bin"))
+                    pem_files = list(cdm_path.glob("*.pem"))
+                    if not (bin_files and pem_files):
+                        logging.error("CDM inválida ou não presente (.wvd ou .bin+.pem)")
+                        return False
+                
+                logging.info("Vídeo DRM detectado e CDM encontrada. Iniciando processo de obtenção de chaves...")
+
+                pssh = None
+                try:
+                    mpd_response = session.get(video_url)
+                    if mpd_response.status_code == 200:
+                        pssh = self._extract_pssh(mpd_response.text)
+                        if pssh:
+                            logging.info(f"PSSH extraído: {pssh}")
+                        else:
+                            logging.warning("Não foi possível extrair o PSSH do MPD.")
+                    else:
+                        logging.warning(f"Falha ao baixar MPD para extração de PSSH: {mpd_response.status_code}")
+                except Exception as e:
+                    logging.warning(f"Erro ao tentar extrair PSSH: {e}")
+
+                if not pssh:
+                    logging.error("PSSH não encontrado. Abortando download criptografado.")
+                    return False
+
+                # https://api-player-embed.hotmart.com/v2/drm/{media_code}/license?token={token}&userCode={user_code}&applicationCode={app_code}
+                parsed_url = urlparse(url)
+                query_params = parse_qs(parsed_url.query)
+
+                path_parts = parsed_url.path.split('/')
+                media_code = path_parts[-1] if path_parts else ""
+
+                token = query_params.get('jwtToken', [''])[0] or query_params.get('token', [''])[0]
+                user_code = query_params.get('userCode', [''])[0]
+                app_code = query_params.get('applicationCode', [''])[0]
+
+                if not (media_code and token and user_code and app_code):
+                    logging.error("Não foi possível extrair todos os parâmetros necessários para a URL de licença.")
+                    return False
+
+                license_url = f"https://api-player-embed.hotmart.com/v2/drm/{media_code}/license?token={token}&userCode={user_code}&applicationCode={app_code}"
+                
+                membership_code = extra_props.get("membership_code") if extra_props else ""
+                if not membership_code:
+                     logging.error("Membership code não fornecido. Necessário para obter a licença.")
+                     return False
+
+                keys = self._get_license_keys(pssh, license_url, session, membership_code)
+                
+                if not keys:
+                    logging.error("Falha ao obter chaves de descriptografia.")
+                    return False
+                
+                logging.info(f"Chaves obtidas: {keys}")
+
+                retry_opts = build_ytdlp_retry_config(self.settings)
+
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    temp_path = Path(temp_dir)
+                    temp_base_name = "video"
+                    
+                    ydl_opts = {
+                        'format': 'bestvideo+bestaudio',
+                        'allow_unplayable_formats': True,
+                        'outtmpl': str(temp_path / f"{temp_base_name}.encrypted.%(ext)s"),
+                        'keepvideo': True,
+                        'http_headers': {
+                            'Origin': 'https://cf-embed.play.hotmart.com',
+                            'Referer': 'https://cf-embed.play.hotmart.com/',
+                            'Sec-Fetch-Dest': 'empty',
+                            'Sec-Fetch-Mode': 'cors',
+                            'Sec-Fetch-Site': 'same-site',
+                        },
+                        'quiet': True,
+                        'no_warnings': True,
+                        'progress': True,
+                        **retry_opts,
+                    }
+                    
+                    ydl_opts['http_headers'].update({header: value for header, value in session.headers.items()})
+
+                    downloaded_files = []
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        info = ydl.extract_info(video_url, download=True)
+                        if 'requested_downloads' in info:
+                            for d in info['requested_downloads']:
+                                downloaded_files.append(d['filepath'])
+                        else:
+                            downloaded_files.append(info['filepath'])
+
+                    actual_downloaded_files = []
+                    for f in downloaded_files:
+                        if os.path.exists(f):
+                            actual_downloaded_files.append(f)
+                    
+                    if not actual_downloaded_files:
+                        logging.warning("Arquivos reportados pelo yt-dlp não encontrados. Buscando partes no diretório temporário.")
+                        logging.debug(f"Conteúdo do diretório temporário: {os.listdir(temp_dir)}")
+                        for file_name in os.listdir(temp_dir):
+                            full_path = os.path.join(temp_dir, file_name)
+                            if os.path.isfile(full_path) and ".encrypted." in file_name and not file_name.endswith(".part"):
+                                actual_downloaded_files.append(full_path)
+                    
+                    if not actual_downloaded_files:
+                        logging.error("Nenhum arquivo criptografado encontrado para processar.")
+                        return False
+
+                    downloaded_files = actual_downloaded_files
+                    logging.info(f"Arquivos para descriptografia: {[os.path.basename(f) for f in downloaded_files]}")
+
+                    decrypted_files = []
+                    for enc_file in downloaded_files:
+                        base, ext = os.path.splitext(enc_file)
+                        dec_file = f"{base}.decrypted{ext}"
+
+                        cmd = ['mp4decrypt']
+                        for key in keys:
+                            cmd.extend(['--key', key])
+                        cmd.extend([enc_file, dec_file])
+                        
+                        logging.info(f"Descriptografando {os.path.basename(enc_file)}...")
+                        try:
+                            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                            decrypted_files.append(dec_file)
+                        except subprocess.CalledProcessError as e:
+                            logging.error(f"Erro na descriptografia: {e.stderr.decode(errors='replace')}")
+                            return False
+
+                    temp_output_file = str(temp_path / f"{temp_base_name}.mp4")
+                    cmd_merge = ['ffmpeg', '-y']
+                    for dec_file in decrypted_files:
+                        cmd_merge.extend(['-i', dec_file])
+                    cmd_merge.extend(['-c', 'copy', temp_output_file])
+
+                    logging.info(f"Unindo arquivos...")
+                    try:
+                        subprocess.run(cmd_merge, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                    except subprocess.CalledProcessError as e:
+                        logging.error(f"Erro ao unir arquivos: {e.stderr.decode(errors='replace')}")
+                        return False
+
+                    final_output_file = str(download_path) + ".mp4"
+                    logging.info(f"Movendo arquivo final para {final_output_file}...")
+                    shutil.move(temp_output_file, final_output_file)
+                
+                logging.info(f"Vídeo criptografado baixado e processado para {final_output_file}")
+                return True
+
+            logging.debug(f"Selected video asset with quality {video_asset.get('height')}p. URL: {video_url}")
 
             retry_opts = build_ytdlp_retry_config(self.settings)
             ydl_opts = {
@@ -143,7 +392,7 @@ class HotmartDownloader(BaseDownloader):
                     ydl_opts['embedsubtitles'] = True
 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([m3u8_url])
+                ydl.download([video_url])
 
             logging.info(f"Vídeo baixado para {download_path}")
             return True

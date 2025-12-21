@@ -15,3 +15,15 @@ logs/
 .venv/
 venv/
 env/
+
+# Arquivos extraido de navegador para analise
+har/
+
+# CDM lol
+*.bin
+*.pem
+*.wvd
+
+# hls
+*.mpd
+*.m3u8

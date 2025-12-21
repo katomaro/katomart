@@ -88,6 +88,7 @@ class HotmartPlatform(BasePlatform):
     def __init__(self, api_service: ApiService, settings_manager: SettingsManager):
         super().__init__(api_service, settings_manager)
         self._token_fetcher = HotmartTokenFetcher()
+        self.course_codes: Dict[str, str] = {}
 
     @classmethod
     def auth_fields(cls) -> List[AuthField]:
@@ -185,6 +186,8 @@ Para usuários gratuitos: Como obter o token da Hotmart?:
         if not self._session:
             raise ConnectionError("The session has not been authenticated.")
 
+        membership_code = self.course_codes.get(str(course_id))
+
         lesson_hash = lesson.get("id")
         if not lesson_hash:
             raise ValueError("Lesson ID (hash) is missing.")
@@ -215,7 +218,8 @@ Para usuários gratuitos: Como obter o token da Hotmart?:
                 order=video_data.get("order", video_index),
                 title=video_data.get("name", "video"),
                 size=video_data.get("size", 0),
-                duration=video_data.get("duration", 0)
+                duration=video_data.get("duration", 0),
+                extra_props={"membership_code": membership_code} if membership_code else {}
             ))
 
         attachment_url = f"https://api-club-course-consumption-gateway-ga.cb.hotmart.com/v1/pages/{lesson_hash}/complementary-content"
@@ -345,6 +349,23 @@ Para usuários gratuitos: Como obter o token da Hotmart?:
         
         all_content = {}
         for course in courses:
+            try:
+                basic_info_url = "https://api-club-course-consumption-gateway-ga.cb.hotmart.com/public/v1/membership/basic-info"
+                headers = self._session.headers.copy()
+                headers["x-product-id"] = str(course["id"])
+                
+                resp = self._session.get(basic_info_url, headers=headers)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    code = data.get("code")
+                    if code:
+                        logging.info(f"Obtido código de membro para curso {course['id']}: {code}")
+                        self.course_codes[str(course["id"])] = code
+                else:
+                    logging.warning(f"Falha ao obter basic-info para curso {course['id']}: {resp.status_code}")
+            except Exception as e:
+                logging.warning(f"Erro ao obter basic-info para curso {course['id']}: {e}")
+
             headers = self._session.headers.copy()
             headers.update({
                 "slug": course["slug"],

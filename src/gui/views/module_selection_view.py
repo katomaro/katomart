@@ -1,7 +1,7 @@
 import json
 import logging
 from PySide6.QtCore import Signal, Qt
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QTreeWidget, QTreeWidgetItem, QPushButton, QLabel
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QTreeWidget, QTreeWidgetItem, QPushButton, QLabel
 
 class ModuleSelectionView(QWidget):
     """Third screen: allows selection of modules and lessons."""
@@ -16,6 +16,25 @@ class ModuleSelectionView(QWidget):
         self.tree_widget = QTreeWidget()
         self.tree_widget.setHeaderLabel("Conteúdo do Curso")
         self.tree_widget.itemChanged.connect(self._on_item_changed)
+
+        btn_layout = QHBoxLayout()
+        self.btn_select_all = QPushButton("Selecionar Tudo")
+        self.btn_select_all.clicked.connect(self._select_all)
+        self.btn_deselect_all = QPushButton("Deselecionar Tudo")
+        self.btn_deselect_all.clicked.connect(self._deselect_all)
+        
+        self.btn_expand_all = QPushButton("Expandir Tudo")
+        self.btn_expand_all.clicked.connect(self.tree_widget.expandAll)
+        self.btn_collapse_all = QPushButton("Colapsar Tudo")
+        self.btn_collapse_all.clicked.connect(self.tree_widget.collapseAll)
+
+        btn_layout.addWidget(self.btn_select_all)
+        btn_layout.addWidget(self.btn_deselect_all)
+        btn_layout.addWidget(self.btn_expand_all)
+        btn_layout.addWidget(self.btn_collapse_all)
+        layout.addLayout(btn_layout)
+
+        layout.addWidget(self.tree_widget)
 
         self.download_button = QPushButton("Baixar Selecionados")
         self.download_button.clicked.connect(self._on_download)
@@ -84,6 +103,24 @@ class ModuleSelectionView(QWidget):
                     lesson_item.setCheckState(0, Qt.CheckState.Checked)
         
         self.tree_widget.expandAll()
+
+    def _select_all(self) -> None:
+        self._set_all_check_state(Qt.CheckState.Checked)
+
+    def _deselect_all(self) -> None:
+        self._set_all_check_state(Qt.CheckState.Unchecked)
+
+    def _set_all_check_state(self, state: Qt.CheckState) -> None:
+        self.tree_widget.blockSignals(True)
+        root = self.tree_widget.invisibleRootItem()
+        self._recursive_set_state(root, state)
+        self.tree_widget.blockSignals(False)
+
+    def _recursive_set_state(self, item: QTreeWidgetItem, state: Qt.CheckState) -> None:
+        for i in range(item.childCount()):
+            child = item.child(i)
+            child.setCheckState(0, state)
+            self._recursive_set_state(child, state)
 
     def _on_download(self) -> None:
         """
