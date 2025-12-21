@@ -4,6 +4,7 @@
     "max_concurrent_segment_downloads": 1,
     "timeout_seconds": 30,
     "download_subtitles": true,
+    "download_podcasts": true,
     "subtitle_language": "en",
     "audio_language": "pt-BR",
     "keep_audio_only": false,

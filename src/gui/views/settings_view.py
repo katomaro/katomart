@@ -111,6 +111,7 @@ class SettingsView(QWidget):
         self.timeout_spin = QSpinBox()
         self.timeout_spin.setRange(10, 300)
         self.download_subtitles_check = QCheckBox("Baixar Legendas")
+        self.download_podcasts_check = QCheckBox("Baixar Podcasts (Aulas apenas áudio)")
 
         self.subtitle_lang_combo = QComboBox()
         self.subtitle_languages = {
@@ -202,6 +203,7 @@ class SettingsView(QWidget):
         self._form_layout.addRow("Tamanho máximo do nome do Arquivo:", self.file_name_max_spin)
         self._form_layout.addRow("Timeout de Requisição (s):", self.timeout_spin)
         self._form_layout.addRow(self.download_subtitles_check)
+        self._form_layout.addRow(self.download_podcasts_check)
         self._form_layout.addRow("Idioma das Legendas:", self.subtitle_lang_combo)
         self._form_layout.addRow(self.hardcode_subtitles_check)
         self._form_layout.addRow(self.download_embedded_check)
@@ -349,6 +351,7 @@ class SettingsView(QWidget):
         self.lesson_name_max_spin.setValue(getattr(settings, "max_lesson_name_length", 60))
         self.file_name_max_spin.setValue(getattr(settings, "max_file_name_length", 30))
         self.download_subtitles_check.setChecked(settings.download_subtitles)
+        self.download_podcasts_check.setChecked(getattr(settings, "download_podcasts", True))
 
         index = self.subtitle_lang_combo.findData(settings.subtitle_language)
         if index != -1:
@@ -432,6 +435,7 @@ class SettingsView(QWidget):
             max_concurrent_segment_downloads=self.max_concurrent_downloads_spin.value(),
             timeout_seconds=self.timeout_spin.value(),
             download_subtitles=self.download_subtitles_check.isChecked(),
+            download_podcasts=self.download_podcasts_check.isChecked(),
             subtitle_language=self.subtitle_lang_combo.currentData(),
             hardcode_subtitles=self.hardcode_subtitles_check.isChecked(),
             audio_language=self.audio_lang_combo.currentData(),

@@ -65,6 +65,18 @@ class HotmartDownloader(BaseDownloader):
         ]
 
         if not video_assets:
+            if getattr(self.settings, 'download_podcasts', True):
+                audio_assets = [
+                    a for a in assets
+                    if a.get('contentType', '').startswith('audio/') and a.get('url')
+                ]
+                if audio_assets:
+                    logging.info("Nenhum vídeo encontrado, mas áudio detectado. Selecionando melhor áudio.")
+                    best_audio = next((a for a in audio_assets if 'mp4' in a.get('contentType', '')), audio_assets[0])
+                    return best_audio
+            else:
+                logging.info("Nenhum vídeo encontrado e download de podcasts desativado.")
+
             logging.error("No HLS video assets found in the media assets list.")
             return None
 

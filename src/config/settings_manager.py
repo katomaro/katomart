@@ -14,6 +14,7 @@ class AppSettings:
     max_concurrent_segment_downloads: int = 1
     timeout_seconds: int = 30
     download_subtitles: bool = True
+    download_podcasts: bool = True
     subtitle_language: str = "en"
     audio_language: str = "pt-BR"
     keep_audio_only: bool = False
