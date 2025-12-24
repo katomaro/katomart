@@ -674,7 +674,7 @@ class DownloadWorker(QRunnable):
                             self._mark_resume_status(
                                 course_id_str, module_key, lesson_key, "description", None, False
                             )
-                            self.signals.result.emit(f"    - [ERROR] Falha em obeter dados da aula: {lesson_title}")
+                            self.signals.result.emit(f"    - [ERROR] Falha em obter dados da aula: {lesson_title}")
 
                         if self.resume_manager and self.resume_state:
                             self.resume_state["completed"] = self.resume_manager.is_complete(
