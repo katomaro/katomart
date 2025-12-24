@@ -3,6 +3,7 @@ import logging
 import re
 import subprocess
 import time
+import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -675,6 +676,15 @@ class DownloadWorker(QRunnable):
                                 course_id_str, module_key, lesson_key, "description", None, False
                             )
                             self.signals.result.emit(f"    - [ERROR] Falha em obter dados da aula: {lesson_title}")
+
+                            if getattr(self.settings, "delete_folder_on_error", False):
+                                try:
+                                    if lesson_path.exists():
+                                        shutil.rmtree(lesson_path)
+                                        self.signals.result.emit(f"    - [INFO] Pasta da aula excluída devido ao erro: {lesson_path}")
+                                except Exception as del_err:
+                                    logging.error(f"Falha ao excluir pasta da aula {lesson_path}: {del_err}")
+                                    self.signals.result.emit(f"    - [ERROR] Falha ao excluir pasta da aula: {del_err}")
 
                         if self.resume_manager and self.resume_state:
                             self.resume_state["completed"] = self.resume_manager.is_complete(

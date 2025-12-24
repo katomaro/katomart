@@ -62,7 +62,7 @@ class MainWindow(QMainWindow):
         message = (
             "Manter um Software desse nível \u00e9 um trabalho extensivo e custoso, que exige muito tempo e estudo, além de acessos legítimos em plataformas. "
             "Com uma assinatura mensal de apenas R$5, você pode ajudar a manter o Katomart! ativo e em constante melhoria, além de desbloquear funções extras e poderosas.\n\n"
-            "Visite https://katomaro.com/assinaturas e conhe\u00e7a os benefícios."
+            "Visite https://katomaro.com/store/katomart e conhe\u00e7a os benefícios."
         )
         QMessageBox.information(self, "Suporte o Katomart!", message)
 

@@ -195,6 +195,7 @@ class SettingsView(QWidget):
             self.audio_lang_combo.addItem(name, userData=code)
 
         self.keep_audio_only_check = QCheckBox("Manter Apenas Áudio")
+        self.delete_folder_on_error_check = QCheckBox("Excluir pasta da aula em caso de erro")
         self._form_layout.addRow("Caminho para Download:", self.download_path_edit)
         self._form_layout.addRow("Qualidade do Vídeo:", self.video_quality_combo)
         self._form_layout.addRow("Tamanho máximo do nome do Curso:", self.course_name_max_spin)
@@ -209,6 +210,7 @@ class SettingsView(QWidget):
         self._form_layout.addRow(self.download_embedded_check)
         self._form_layout.addRow("Idioma do Áudio (Em caso de múltiplos áudios):", self.audio_lang_combo)
         self._form_layout.addRow(self.keep_audio_only_check)
+        self._form_layout.addRow(self.delete_folder_on_error_check)
 
         general_group = QGroupBox("Configurações Gerais")
         general_group.setLayout(self._form_layout)
@@ -364,6 +366,7 @@ class SettingsView(QWidget):
             self.audio_lang_combo.setCurrentIndex(index)
 
         self.keep_audio_only_check.setChecked(settings.keep_audio_only)
+        self.delete_folder_on_error_check.setChecked(getattr(settings, "delete_folder_on_error", False))
         self.download_embedded_check.setChecked(settings.download_embedded_videos)
 
         self.membership_email_edit.setText(settings.membership_email)
@@ -440,6 +443,7 @@ class SettingsView(QWidget):
             hardcode_subtitles=self.hardcode_subtitles_check.isChecked(),
             audio_language=self.audio_lang_combo.currentData(),
             keep_audio_only=self.keep_audio_only_check.isChecked(),
+            delete_folder_on_error=self.delete_folder_on_error_check.isChecked(),
             user_agent=self.user_agent_edit.text().strip(),
             download_retry_attempts=self.retry_attempts_spin.value(),
             download_retry_delay_seconds=self.retry_delay_spin.value(),

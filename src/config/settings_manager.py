@@ -57,6 +57,7 @@ class AppSettings:
     allowed_platforms: list[str] = field(default_factory=list)
     is_premium_member: bool = False
     create_resume_summary: bool = False
+    delete_folder_on_error: bool = False
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "AppSettings":
