@@ -7,6 +7,7 @@ import yt_dlp
 from .base import BaseDownloader
 from src.config.settings_manager import SettingsManager
 from src.utils.retry import build_ytdlp_retry_config
+from src.utils.filesystem import get_executable_path
 
 
 class YtdlpDownloader(BaseDownloader):
@@ -41,6 +42,9 @@ class YtdlpDownloader(BaseDownloader):
             output_template += ".%(ext)s"
 
         retry_opts = build_ytdlp_retry_config(self.settings)
+        
+        ffmpeg_exe = get_executable_path("ffmpeg", getattr(self.settings, "ffmpeg_path", None))
+
         ydl_opts = {
             'outtmpl': output_template,
             'noplaylist': True,
@@ -50,6 +54,10 @@ class YtdlpDownloader(BaseDownloader):
             'progress': True,
             **retry_opts,
         }
+
+        if ffmpeg_exe:
+            ydl_opts['ffmpeg_location'] = str(Path(ffmpeg_exe).parent)
+
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([url])

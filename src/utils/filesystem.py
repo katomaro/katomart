@@ -1,5 +1,7 @@
 import re
-from typing import Set
+import shutil
+import os
+from typing import Set, Optional
 from pathlib import Path
 
 _INVALID_WIN_CHARS_RE = re.compile(r'[\x00-\x1f<>:"/\\|?*]')
@@ -80,3 +82,37 @@ def truncate_filename_preserve_ext(filename: str, max_len: int, replacement: str
 
     result = stem + suffix
     return sanitize_path_component(result, replacement)
+
+
+def get_executable_path(name: str, configured_path: Optional[str] = None) -> Optional[str]:
+    """
+    Resolves the path to an executable.
+
+    1. If configured_path is provided:
+       - If it points to a file, return it if it exists.
+       - If it points to a directory, look for 'name' or 'name.exe' inside.
+    2. If not found or not configured, try shutil.which(name).
+    3. Return None if not found.
+    """
+    candidates = [name]
+    if os.name == 'nt' and not name.lower().endswith('.exe'):
+        candidates.append(name + '.exe')
+
+    if configured_path:
+        p = Path(configured_path)
+        if p.is_file() and p.exists():
+            return str(p.resolve())
+        
+        if p.is_dir() and p.exists():
+            for candidate in candidates:
+                target = p / candidate
+                if target.exists() and target.is_file():
+                    return str(target.resolve())
+
+    # Fallback to system PATH
+    path_exe = shutil.which(name)
+    if path_exe:
+        return path_exe
+    
+    return None
+

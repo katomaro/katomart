@@ -17,7 +17,7 @@ from src.downloaders.factory import DownloaderFactory
 from src.utils.resume_manager import ResumeManager
 
 from src.utils.filesystem import sanitize_path_component
-from src.utils.filesystem import truncate_component, truncate_filename_preserve_ext
+from src.utils.filesystem import truncate_component, truncate_filename_preserve_ext, get_executable_path
 
 
 class WorkerSignals(QObject):
@@ -297,9 +297,13 @@ class DownloadWorker(QRunnable):
     def _extract_audio_from_video(self, media_path: Path) -> Path:
         """Use ffmpeg to extract audio from a media file and return the audio path."""
 
+        ffmpeg_exe = get_executable_path("ffmpeg", getattr(self.settings, "ffmpeg_path", None))
+        if not ffmpeg_exe:
+            raise FileNotFoundError("ffmpeg executable not found.")
+
         audio_path = media_path.with_suffix(".wav")
         cmd = [
-            "ffmpeg",
+            ffmpeg_exe,
             "-y",
             "-i",
             str(media_path),

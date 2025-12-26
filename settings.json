@@ -48,5 +48,7 @@
     "membership_email": "",
     "create_resume_summary": false,
     "delete_folder_on_error": false,
-    "allowed_attachment_extensions": []
+    "allowed_attachment_extensions": [],
+    "ffmpeg_path": "./ffmpeg/bin",
+    "bento4_path": "./bento4/bin"
 }

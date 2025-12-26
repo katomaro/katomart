@@ -20,6 +20,7 @@ from pywidevine.pssh import PSSH
 from .base import BaseDownloader
 from src.config.settings_manager import AppSettings, SettingsManager
 from src.utils.retry import build_ytdlp_retry_config
+from src.utils.filesystem import get_executable_path
 
 
 class HotmartDownloader(BaseDownloader):
@@ -344,11 +345,17 @@ class HotmartDownloader(BaseDownloader):
                     logging.info(f"Arquivos para descriptografia: {[os.path.basename(f) for f in downloaded_files]}")
 
                     decrypted_files = []
+                    
+                    mp4decrypt_exe = get_executable_path("mp4decrypt", getattr(self.settings, "bento4_path", None))
+                    if not mp4decrypt_exe:
+                        logging.error("mp4decrypt (Bento4) não encontrado. Verifique se o caminho está configurado corretamente ou se está no PATH.")
+                        return False
+
                     for enc_file in downloaded_files:
                         base, ext = os.path.splitext(enc_file)
                         dec_file = f"{base}.decrypted{ext}"
 
-                        cmd = ['mp4decrypt']
+                        cmd = [mp4decrypt_exe]
                         for key in keys:
                             cmd.extend(['--key', key])
                         cmd.extend([enc_file, dec_file])
@@ -362,7 +369,13 @@ class HotmartDownloader(BaseDownloader):
                             return False
 
                     temp_output_file = str(temp_path / f"{temp_base_name}.mp4")
-                    cmd_merge = ['ffmpeg', '-y']
+                    
+                    ffmpeg_exe = get_executable_path("ffmpeg", getattr(self.settings, "ffmpeg_path", None))
+                    if not ffmpeg_exe:
+                        logging.error("ffmpeg não encontrado. Verifique se o caminho está configurado corretamente ou se está no PATH.")
+                        return False
+
+                    cmd_merge = [ffmpeg_exe, '-y']
                     for dec_file in decrypted_files:
                         cmd_merge.extend(['-i', dec_file])
                     cmd_merge.extend(['-c', 'copy', temp_output_file])

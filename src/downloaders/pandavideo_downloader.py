@@ -9,6 +9,7 @@ import yt_dlp
 
 from src.config.settings_manager import SettingsManager
 from src.utils.retry import build_ytdlp_retry_config
+from src.utils.filesystem import get_executable_path
 from .base import BaseDownloader
 
 
@@ -203,6 +204,8 @@ class PandaVideoDownloader(BaseDownloader):
             if not _has_extension(download_path):
                 output_template += ".%(ext)s"
 
+            ffmpeg_exe = get_executable_path("ffmpeg", getattr(self.settings, "ffmpeg_path", None))
+            
             ydl_opts = {
                 'outtmpl': output_template,
                 'noplaylist': True,
@@ -213,6 +216,9 @@ class PandaVideoDownloader(BaseDownloader):
                 'concurrent_fragment_downloads': max(1, self.settings.max_concurrent_segment_downloads),
                 **retry_opts,
             }
+            
+            if ffmpeg_exe:
+                ydl_opts['ffmpeg_location'] = str(Path(ffmpeg_exe).parent)
 
             if self.settings.keep_audio_only:
                 ydl_opts['format'] = 'bestaudio/best'

@@ -59,6 +59,8 @@ class AppSettings:
     create_resume_summary: bool = False
     delete_folder_on_error: bool = False
     allowed_attachment_extensions: list[str] = field(default_factory=list)
+    ffmpeg_path: str = "./ffmpeg/bin"
+    bento4_path: str = "./bento4/bin"
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "AppSettings":

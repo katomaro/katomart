@@ -200,6 +200,9 @@ class SettingsView(QWidget):
         self.allowed_extensions_edit.setPlaceholderText("Ex: .pdf\n.zip\n.docx")
         self.allowed_extensions_edit.setMaximumHeight(100)
 
+        self.ffmpeg_path_edit = QLineEdit()
+        self.bento4_path_edit = QLineEdit()
+
         self._form_layout.addRow("Caminho para Download:", self.download_path_edit)
         self._form_layout.addRow("Qualidade do Vídeo:", self.video_quality_combo)
         self._form_layout.addRow("Tamanho máximo do nome do Curso:", self.course_name_max_spin)
@@ -215,6 +218,8 @@ class SettingsView(QWidget):
         self._form_layout.addRow("Idioma do Áudio (Em caso de múltiplos áudios):", self.audio_lang_combo)
         self._form_layout.addRow(self.keep_audio_only_check)
         self._form_layout.addRow(self.delete_folder_on_error_check)
+        self._form_layout.addRow("Caminho do FFmpeg:", self.ffmpeg_path_edit)
+        self._form_layout.addRow("Caminho do Bento4 SDK:", self.bento4_path_edit)
 
         general_group = QGroupBox("Configurações Gerais")
         general_group.setLayout(self._form_layout)
@@ -374,6 +379,8 @@ class SettingsView(QWidget):
         self.delete_folder_on_error_check.setChecked(getattr(settings, "delete_folder_on_error", False))
         self.allowed_extensions_edit.setPlainText("\n".join(settings.allowed_attachment_extensions))
         self.download_embedded_check.setChecked(settings.download_embedded_videos)
+        self.ffmpeg_path_edit.setText(getattr(settings, "ffmpeg_path", "./ffmpeg/bin"))
+        self.bento4_path_edit.setText(getattr(settings, "bento4_path", "./bento4/bin"))
 
         self.membership_email_edit.setText(settings.membership_email)
         self.membership_password_edit.clear()
@@ -450,6 +457,8 @@ class SettingsView(QWidget):
             audio_language=self.audio_lang_combo.currentData(),
             keep_audio_only=self.keep_audio_only_check.isChecked(),
             delete_folder_on_error=self.delete_folder_on_error_check.isChecked(),
+            ffmpeg_path=self.ffmpeg_path_edit.text().strip(),
+            bento4_path=self.bento4_path_edit.text().strip(),
             allowed_attachment_extensions=[
                 line.strip() for line in self.allowed_extensions_edit.toPlainText().splitlines() if line.strip()
             ],
