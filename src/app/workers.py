@@ -620,6 +620,28 @@ class DownloadWorker(QRunnable):
                                 full_attachment_name = f"{attachment_order}. {full_attachment_name}"
                                 full_attachment_name = truncate_filename_preserve_ext(full_attachment_name, getattr(self.settings, 'max_file_name_length', 30))
                                 attachment_path = lesson_path / full_attachment_name
+
+                                allowed_exts = self.settings.allowed_attachment_extensions
+                                if allowed_exts:
+                                    normalized_exts = set()
+                                    for ext in allowed_exts:
+                                        ext = ext.strip().lower()
+                                        if ext:
+                                            if not ext.startswith("."):
+                                                ext = "." + ext
+                                            normalized_exts.add(ext)
+                                    
+                                    if normalized_exts:
+                                        file_ext = (attachment.extension or "").strip().lower()
+                                        if file_ext and not file_ext.startswith("."):
+                                            file_ext = "." + file_ext
+
+                                        if file_ext not in normalized_exts:
+                                            self.signals.result.emit(
+                                                f"    - [PULADO] Extensão não permitida: {attachment.filename}"
+                                            )
+                                            continue
+
                                 logging.info(f"Baixando Anexo '{attachment.filename}' para '{attachment_path}'")
                                 attachment_key = str(attachment.attachment_id or attachment_order)
 

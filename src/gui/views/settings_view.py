@@ -196,6 +196,10 @@ class SettingsView(QWidget):
 
         self.keep_audio_only_check = QCheckBox("Manter Apenas Áudio")
         self.delete_folder_on_error_check = QCheckBox("Excluir pasta da aula em caso de erro")
+        self.allowed_extensions_edit = QTextEdit()
+        self.allowed_extensions_edit.setPlaceholderText("Ex: .pdf\n.zip\n.docx")
+        self.allowed_extensions_edit.setMaximumHeight(100)
+
         self._form_layout.addRow("Caminho para Download:", self.download_path_edit)
         self._form_layout.addRow("Qualidade do Vídeo:", self.video_quality_combo)
         self._form_layout.addRow("Tamanho máximo do nome do Curso:", self.course_name_max_spin)
@@ -331,6 +335,7 @@ class SettingsView(QWidget):
             "Não inclua 'http(s)://' nem caminhos. Subdomínios também serão verificados (ex: 'docs.example.com' influenciará 'sub.docs.example.com')."
         )
         self._paid_form_layout.addRow("Domínios Ignorados para Embeds (um por linha):", self.embed_blacklist_edit)
+        self._paid_form_layout.addRow("Baixar apenas anexos com as extensões (uma por linha):", self.allowed_extensions_edit)
         self._paid_form_layout.addRow(self.paid_status_label)
 
         paid_group = QGroupBox("Configurações Pagas")
@@ -367,6 +372,7 @@ class SettingsView(QWidget):
 
         self.keep_audio_only_check.setChecked(settings.keep_audio_only)
         self.delete_folder_on_error_check.setChecked(getattr(settings, "delete_folder_on_error", False))
+        self.allowed_extensions_edit.setPlainText("\n".join(settings.allowed_attachment_extensions))
         self.download_embedded_check.setChecked(settings.download_embedded_videos)
 
         self.membership_email_edit.setText(settings.membership_email)
@@ -444,6 +450,9 @@ class SettingsView(QWidget):
             audio_language=self.audio_lang_combo.currentData(),
             keep_audio_only=self.keep_audio_only_check.isChecked(),
             delete_folder_on_error=self.delete_folder_on_error_check.isChecked(),
+            allowed_attachment_extensions=[
+                line.strip() for line in self.allowed_extensions_edit.toPlainText().splitlines() if line.strip()
+            ],
             user_agent=self.user_agent_edit.text().strip(),
             download_retry_attempts=self.retry_attempts_spin.value(),
             download_retry_delay_seconds=self.retry_delay_spin.value(),

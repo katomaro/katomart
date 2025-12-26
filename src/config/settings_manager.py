@@ -58,6 +58,7 @@ class AppSettings:
     is_premium_member: bool = False
     create_resume_summary: bool = False
     delete_folder_on_error: bool = False
+    allowed_attachment_extensions: list[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "AppSettings":
@@ -114,6 +115,7 @@ class SettingsManager:
             "whisper_language": default.whisper_language,
             "whisper_output_format": default.whisper_output_format,
             "create_resume_summary": default.create_resume_summary,
+            "allowed_attachment_extensions": default.allowed_attachment_extensions,
         }
         return replace(settings, **paid_only_fields)
 
@@ -164,6 +166,7 @@ class SettingsManager:
                 "whisper_language",
                 "whisper_output_format",
                 "create_resume_summary",
+                "allowed_attachment_extensions",
             }
 
             cached_premium_values = {
