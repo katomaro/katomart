@@ -41,6 +41,12 @@ class AppSettings:
         "linkedin.com",
         "pinterest.com",
         "imgur.com",
+        "whatsapp.com",
+        "wa.me",
+        "t.me",
+        "telegram.me",
+        "telegram.org",
+        "discord.gg"
     ])
     use_whisper_transcription: bool = False
     whisper_model: str = "base"
