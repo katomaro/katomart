@@ -338,7 +338,7 @@ class SettingsView(QWidget):
         self._paid_form_layout.addRow("Baixar apenas anexos com as extensões (uma por linha):", self.allowed_extensions_edit)
         self._paid_form_layout.addRow(self.paid_status_label)
 
-        paid_group = QGroupBox("Configurações Pagas")
+        paid_group = QGroupBox("Configurações Pagas - Obtenha uma assinatura em katomaro.com")
         paid_group.setLayout(self._paid_form_layout)
 
         return self._membership_group, general_group, paid_group
