@@ -5,10 +5,12 @@ import subprocess
 import os
 import shutil
 import tempfile
+import struct
+
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlparse, parse_qs
-from base64 import b64decode
+from urllib.parse import urlparse, parse_qs, urljoin, urlencode, urlunparse
+from base64 import b64encode, b64decode
 
 import requests
 import yt_dlp
@@ -129,6 +131,103 @@ class HotmartDownloader(BaseDownloader):
             logging.error(f"Error extracting PSSH: {e}")
             return None
 
+    def _extract_pssh_from_init(self, mpd_content: str, mpd_url: str, session: requests.Session) -> Optional[str]:
+        """
+        Fallback: Tenta extrair o PSSH do segmento de inicialização.
+        Usa a mesma sessão do download do MPD para garantir consistência de Headers/TLS.
+        """
+        try:
+            logging.info("Tentando extrair PSSH do segmento de inicialização (fallback via String)...")
+
+            if "?" in mpd_url:
+                mpd_base_part = mpd_url.split("?")[0]
+            else:
+                mpd_base_part = mpd_url
+
+            if "/" in mpd_base_part:
+                mpd_dir = mpd_base_part.rsplit("/", 1)[0] + "/"
+            else:
+                mpd_dir = mpd_base_part + "/"
+            init_match = re.search(r'initialization="([^"]+)"', mpd_content)
+            if not init_match:
+                logging.warning("Atributo initialization não encontrado no MPD.")
+                return None
+
+            init_relative = init_match.group(1).replace("&amp;", "&")
+
+            if '$RepresentationID$' in init_relative:
+                rep_match = re.search(r'<Representation[^>]+id="([^"]+)"', mpd_content)
+                if rep_match:
+                    rep_id = rep_match.group(1)
+                    init_relative = init_relative.replace('$RepresentationID$', rep_id)
+
+            base_url_match = re.search(r'<BaseURL>(.*?)</BaseURL>', mpd_content)
+            xml_base_url = ""
+            if base_url_match:
+                xml_base_url = base_url_match.group(1).strip().replace("&amp;", "&")
+
+            if "?" in init_relative:
+                init_path_only, init_query = init_relative.split("?", 1)
+            else:
+                init_path_only, init_query = init_relative, ""
+
+            full_file_url = f"{mpd_dir}{xml_base_url}{init_path_only}"
+
+            urls_to_try = []
+
+            if init_query:
+                urls_to_try.append({
+                    "url": f"{full_file_url}?{init_query}",
+                    "desc": "Token Original (Init)"
+                })
+
+            data = None
+
+            for attempt in urls_to_try:
+                target_url = attempt["url"]
+                logging.debug(f"Tentando {attempt['desc']}: {target_url}")
+                
+                try:
+                    response = session.get(
+                        target_url
+                    )
+                    
+                    if response.status_code == 200:
+                        data = response.content
+                        logging.info(f"Sucesso ao baixar init com {attempt['desc']}")
+                        break
+                    else:
+                        logging.warning(f"Falha {response.status_code} com {attempt['desc']}")
+                        
+                except Exception as e:
+                    logging.error(f"Erro de conexão: {e}")
+
+            if not data:
+                return None
+
+            widevine_sys_id = bytes.fromhex("edef8ba979d64acea3c827dcd51d21ed")
+            sys_id_pos = data.find(widevine_sys_id)
+            
+            if sys_id_pos == -1:
+                logging.warning("Widevine SystemID não encontrado no arquivo init.")
+                return None
+            
+            box_start = sys_id_pos - 12
+            if box_start < 0: return None
+            
+            if data[box_start+4 : box_start+8] != b'pssh':
+                return None
+            
+            box_size = struct.unpack(">I", data[box_start : box_start+4])[0]
+            if box_start + box_size > len(data): return None
+                
+            pssh_box = data[box_start : box_start + box_size]
+            return b64encode(pssh_box).decode('utf-8')
+
+        except Exception as e:
+            logging.error(f"Erro no fallback PSSH: {e}", exc_info=True)
+            return None
+
     def _get_license_keys(self, pssh: str, license_url: str, session: requests.Session, membership_code: str) -> Optional[List[str]]:
         """Obtains the decryption keys from the license server."""
         try:
@@ -246,10 +345,18 @@ class HotmartDownloader(BaseDownloader):
                     mpd_response = session.get(video_url)
                     if mpd_response.status_code == 200:
                         pssh = self._extract_pssh(mpd_response.text)
+
                         if pssh:
-                            logging.info(f"PSSH extraído: {pssh}")
+                            logging.info(f"PSSH extraído do MPD: {pssh}")
                         else:
-                            logging.warning("Não foi possível extrair o PSSH do MPD.")
+
+                            logging.warning("PSSH não encontrado no texto do MPD. Tentando método fallback (Init Segment)...")
+                            pssh = self._extract_pssh_from_init(mpd_response.text, video_url, session)
+
+                            if pssh:
+                                logging.info(f"PSSH recuperado com sucesso do init segment.")
+                            else:
+                                logging.error("Falha fatal: PSSH não encontrado nem no MPD nem no Init Segment.")
                     else:
                         logging.warning(f"Falha ao baixar MPD para extração de PSSH: {mpd_response.status_code}")
                 except Exception as e:
