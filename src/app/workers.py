@@ -4,6 +4,7 @@ import re
 import subprocess
 import time
 import shutil
+import html
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -525,6 +526,7 @@ class DownloadWorker(QRunnable):
                                         for u in found_urls:
                                             if not u:
                                                 continue
+                                            u = html.unescape(u) 
                                             if u.startswith('//'):
                                                 u = 'https:' + u
                                             if u.startswith('javascript:') or u.startswith('mailto:') or u.startswith('#'):

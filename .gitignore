@@ -27,6 +27,7 @@ har/
 # hls
 *.mpd
 *.m3u8
+*.har
 
 # Build
 build/
