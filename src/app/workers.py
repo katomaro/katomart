@@ -514,13 +514,13 @@ class DownloadWorker(QRunnable):
                                         raise
 
                                     if self.settings.download_embedded_videos:
-                                        html = lesson_details.description.text or ""
+                                        desc_html = lesson_details.description.text or ""
                                         found_urls = []
-                                        found_urls.extend(re.findall(r'<iframe[^>]+src=["\']([^"\']+)["\']', html, flags=re.I))
-                                        found_urls.extend(re.findall(r'<video[^>]+src=["\']([^"\']+)["\']', html, flags=re.I))
-                                        found_urls.extend(re.findall(r'<source[^>]+src=["\']([^"\']+)["\']', html, flags=re.I))
-                                        found_urls.extend(re.findall(r'href=["\'](https?://[^"\']+)["\']', html, flags=re.I))
-                                        found_urls.extend(re.findall(r'https?://[^\s"\'<>]+', html, flags=re.I))
+                                        found_urls.extend(re.findall(r'<iframe[^>]+src=["\']([^"\']+)["\']', desc_html, flags=re.I))
+                                        found_urls.extend(re.findall(r'<video[^>]+src=["\']([^"\']+)["\']', desc_html, flags=re.I))
+                                        found_urls.extend(re.findall(r'<source[^>]+src=["\']([^"\']+)["\']', desc_html, flags=re.I))
+                                        found_urls.extend(re.findall(r'href=["\'](https?://[^"\']+)["\']', desc_html, flags=re.I))
+                                        found_urls.extend(re.findall(r'https?://[^\s"\'<>]+', desc_html, flags=re.I))
 
                                         normalized = []
                                         for u in found_urls:
