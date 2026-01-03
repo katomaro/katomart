@@ -3,6 +3,7 @@ from .ytdlp_downloader import YtdlpDownloader
 from .hotmart_video_downloader import HotmartDownloader
 from .requests_downloader import RequestsDownloader
 from .pandavideo_downloader import PandaVideoDownloader
+from .scaleup_downloader import ScaleUpDownloader
 from src.config.settings_manager import SettingsManager
 
 class DownloaderFactory:
@@ -28,6 +29,8 @@ class DownloaderFactory:
             return HotmartDownloader(settings_manager)
         elif "pandavideo.com" in url:
             return PandaVideoDownloader(settings_manager)
+        elif "player.scaleup.com.br" in url:
+            return ScaleUpDownloader(settings_manager)
         elif ".m3u8" in url:
             return YtdlpDownloader(settings_manager)
         else:

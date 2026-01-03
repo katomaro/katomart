@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from pathlib import Path
 from urllib.parse import urljoin
 from typing import Any, Dict, List, Optional
@@ -146,6 +147,14 @@ Para usuários gratuitos: Como obter o token da Kiwify?:
             {
                 "Authorization": f"Bearer {token}",
                 "User-Agent": self._settings.user_agent,
+                'User-Agent': 'Mozilla/5.0 ...',
+                'Accept': 'application/json, text/plain, */*',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Connection': 'keep-alive',
+                'Sec-Fetch-Dest': 'empty',
+                'Sec-Fetch-Mode': 'cors',
+                'Sec-Fetch-Site': 'same-site',
                 "Accept": "application/json, text/plain, */*",
                 "Origin": "https://admin.kiwify.com.br",
                 "Referer": "https://admin.kiwify.com.br/",
@@ -194,6 +203,8 @@ Para usuários gratuitos: Como obter o token da Kiwify?:
 
             if school_listing:
                 items = data.get("my_courses", [])
+                if not items:
+                    break
                 for course in items:
                     courses.append(
                         {
@@ -205,6 +216,8 @@ Para usuários gratuitos: Como obter o token da Kiwify?:
                     )
             else:
                 items = data.get("courses", [])
+                if not items:
+                    break
                 for course in items:
                     course_info = course.get("course_info") or {}
                     school_info = course.get("school_info") or {}
@@ -232,9 +245,10 @@ Para usuários gratuitos: Como obter o token da Kiwify?:
 
             total_courses = data.get("count", 0)
             page_size = data.get("page_size", 10)
-            if page_counter * page_size >= total_courses:
+            if page_size == 0 or page_counter * page_size >= total_courses:
                 break
             page_counter += 1
+            time.sleep(1)
 
         return courses
 
