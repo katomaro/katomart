@@ -45,6 +45,18 @@ class BasePlatform(ABC):
         self._api_service = api_service
         self._settings = settings_manager.get_settings()
         self._session: Optional[requests.Session] = None
+        self.credentials: Dict[str, Any] = {}
+
+    def refresh_auth(self) -> None:
+        """
+        Refreshes the authentication session.
+        By default, it re-authenticates using the stored credentials.
+        Subclasses can override this to use refresh tokens if available.
+        """
+        if self.credentials:
+            self.authenticate(self.credentials)
+        else:
+            raise ValueError("No credentials available for refresh.")
 
     def resolve_access_token(
         self,

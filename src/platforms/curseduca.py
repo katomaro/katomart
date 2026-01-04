@@ -130,6 +130,7 @@ Para plataformas whitelabel Curseduca:
 """.strip()
 
     def authenticate(self, credentials: Dict[str, Any]) -> None:
+        self.credentials = credentials
         base_url = (credentials.get("base_url") or "").rstrip("/")
         if not base_url:
             raise ValueError("Informe a URL base da plataforma Curseduca.")

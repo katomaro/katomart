@@ -41,6 +41,7 @@ Para usuários Gratuitos: Como obter o token de acesso da Medway?:
 """.strip()
 
     def authenticate(self, credentials: Dict[str, Any]) -> None:
+        self.credentials = credentials
         token = (credentials.get("token") or "").strip()
         if not token:
             raise ValueError("Informe um token válido para autenticar na Medway.")

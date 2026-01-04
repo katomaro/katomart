@@ -32,6 +32,7 @@ class AppSettings:
     run_ffmpeg: bool = False
     ffmpeg_args: str = "-c copy"
     download_embedded_videos: bool = True
+    auto_reauth_on_error: bool = False
     embed_domain_blacklist: list[str] = field(default_factory=lambda: [
         "docs.google.com",
         "drive.google.com",

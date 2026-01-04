@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import json
 import re
 from typing import Any, Dict, List
@@ -43,6 +44,7 @@ Como obter o token da Data Science Academy?
 """.strip()
 
     def authenticate(self, credentials: Dict[str, Any]) -> None:
+        self.credentials = credentials
         token = self.resolve_access_token(credentials, self._exchange_credentials_for_token)
         self._session = requests.Session()
         self._session.headers.update(

@@ -1,6 +1,7 @@
 import json
 import logging
 from pathlib import Path
+from typing import Any
 from PySide6.QtCore import QThreadPool, QTimer
 from PySide6.QtWidgets import QMainWindow, QWidget, QStackedWidget, QTabWidget, QMessageBox
 
@@ -227,5 +228,18 @@ class MainWindow(QMainWindow):
         worker.signals.progress.connect(self.progress_view.set_progress)
         worker.signals.result.connect(self.progress_view.log_message)
         worker.signals.error.connect(self._handle_worker_error)
+        worker.signals.request_auth_confirmation.connect(self._handle_auth_confirmation_request)
         worker.signals.finished.connect(lambda: self.progress_view.log_message("Worker finished."))
         self._thread_pool.start(worker)
+
+    def _handle_auth_confirmation_request(self, confirmation_event: Any) -> None:
+        """Handles a request from the worker to confirm manual authentication."""
+        QMessageBox.information(
+            self,
+            "Re-autenticação Necessária",
+            "A sessão expirou e o sistema está tentando re-autenticar.\n"
+            "Uma janela do navegador foi aberta (ou será aberta).\n"
+            "Por favor, realize o login/captcha manualmente no navegador e clique em OK aqui quando terminar."
+        )
+        if confirmation_event:
+            confirmation_event.set()

@@ -237,6 +237,7 @@ class SettingsView(QWidget):
 
         self.retry_delay_spin = QSpinBox()
         self.retry_delay_spin.setRange(0, 600)
+        self.auto_reauth_check = QCheckBox("Tentar re-autenticação automática em caso de erro 400/401")
         self.create_resume_summary_check = QCheckBox("Criar JSON de Resumo")
 
         self.download_widevine_check = QCheckBox("Baixar Widevine")
@@ -318,6 +319,7 @@ class SettingsView(QWidget):
             "Quantidade de Retentativas de download:", self.retry_attempts_spin
         )
         self._paid_form_layout.addRow("Delay para Retentativas (s):", self.retry_delay_spin)
+        self._paid_form_layout.addRow(self.auto_reauth_check)
         self._paid_form_layout.addRow(self.create_resume_summary_check)
         self._paid_form_layout.addRow(self.download_widevine_check)
         self._paid_form_layout.addRow("Caminho da CDM:", self.cdm_path_edit)
@@ -397,6 +399,7 @@ class SettingsView(QWidget):
         self.max_concurrent_downloads_spin.setValue(settings.max_concurrent_segment_downloads)
         self.retry_attempts_spin.setValue(settings.download_retry_attempts)
         self.retry_delay_spin.setValue(settings.download_retry_delay_seconds)
+        self.auto_reauth_check.setChecked(getattr(settings, "auto_reauth_on_error", False))
         self.create_resume_summary_check.setChecked(
             getattr(settings, "create_resume_summary", False)
         )
@@ -465,6 +468,7 @@ class SettingsView(QWidget):
             user_agent=self.user_agent_edit.text().strip(),
             download_retry_attempts=self.retry_attempts_spin.value(),
             download_retry_delay_seconds=self.retry_delay_spin.value(),
+            auto_reauth_on_error=self.auto_reauth_check.isChecked(),
             download_widevine=self.download_widevine_check.isChecked(),
             cdm_path=self.cdm_path_edit.text().strip(),
             use_http_proxy=self.use_http_proxy_check.isChecked(),

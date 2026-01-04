@@ -43,6 +43,7 @@ O domínio costuma seguir o padrão *.astronmembers.com, mas instâncias customi
 """.strip()
 
     def authenticate(self, credentials: Dict[str, Any]) -> None:
+        self.credentials = credentials
         platform_url = (credentials.get("platform_url") or "").strip()
         if not platform_url:
             raise ValueError("Informe a URL de login da plataforma Astronmembers.")

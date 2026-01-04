@@ -34,6 +34,7 @@ class WorkerSignals(QObject):
     error = Signal(tuple)
     result = Signal(str)
     progress = Signal(int)
+    request_auth_confirmation = Signal(object)
 
 
 class FetchCoursesWorker(QRunnable):
@@ -158,6 +159,43 @@ class DownloadWorker(QRunnable):
                 if treat_false_as_failure and result is False:
                     raise RuntimeError(f"{description} retornou status de falha.")
                 return result
+            except requests.exceptions.HTTPError as e:
+                is_last_attempt = attempt >= self._retry_attempts
+
+                if is_last_attempt:
+                    if getattr(self.settings, "auto_reauth_on_error", False) and e.response.status_code in (400, 401):
+                        creds = getattr(self.platform, 'credentials', {})
+                        if creds and not creds.get("token"):
+                            logging.warning(f"{description}: Erro {e.response.status_code} após esgotar tentativas. Tentando re-autenticação automática...")
+
+                            confirmation_event = creds.get("manual_auth_confirmation")
+                            if confirmation_event:
+                                confirmation_event.clear()
+                                self.signals.request_auth_confirmation.emit(confirmation_event)
+
+                            try:
+                                self.platform.refresh_auth()
+                                logging.info("Re-autenticação bem sucedida. Tentando operação uma última vez...")
+                                result = func()
+                                if treat_false_as_failure and result is False:
+                                    raise RuntimeError(f"{description} retornou status de falha após re-autenticação.")
+                                return result
+                            except Exception as auth_exc:
+                                logging.error(f"Falha na re-autenticação ou na tentativa final: {auth_exc}")
+
+                    logging.error(
+                        f"{description} falhou após {self._retry_attempts} retentativas: {e}",
+                        exc_info=True,
+                    )
+                    raise
+
+                next_attempt = attempt + 2
+                logging.warning(
+                    f"{description} falhou (tentativa {next_attempt} de {total_attempts}). "
+                    f"Nova tentativa em {self._retry_delay_seconds}s. Erro: {e}"
+                )
+                time.sleep(self._retry_delay_seconds)
+
             except Exception as exc:  # pragma: no cover - operational retry logic
                 is_last_attempt = attempt >= self._retry_attempts
                 if is_last_attempt:

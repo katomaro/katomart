@@ -110,6 +110,7 @@ Para usuários gratuitos: Como obter o token da Hotmart?:
 
     def authenticate(self, credentials: Dict[str, Any]) -> None:
         """Creates an authenticated session for the Hotmart API."""
+        self.credentials = credentials
         token = self.resolve_access_token(credentials, self._exchange_credentials_for_token)
         self._configure_session(token)
 
