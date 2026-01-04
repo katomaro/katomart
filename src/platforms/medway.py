@@ -208,6 +208,7 @@ Para usuários Gratuitos: Como obter o token de acesso da Medway?:
                     title=lesson.get("title", "Aula"),
                     size=0,
                     duration=0,
+                    extra_props={"referer": "https://app.medway.com.br/"}
                 )
             )
         elif "documento" in lesson_type:

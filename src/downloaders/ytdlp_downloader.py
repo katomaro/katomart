@@ -19,7 +19,7 @@ class YtdlpDownloader(BaseDownloader):
         super().__init__(settings_manager)
         self.settings = self.settings_manager.get_settings()
 
-    def download_video(self, url: str, session: requests.Session, download_path: Path) -> bool:
+    def download_video(self, url: str, session: requests.Session, download_path: Path, extra_props: dict = None) -> bool:
         """
         Downloads a video from a given URL using yt-dlp.
 
@@ -27,6 +27,7 @@ class YtdlpDownloader(BaseDownloader):
             url (str): The URL of the video to download.
             session (requests.Session): The requests session (not used by yt-dlp).
             download_path (Path): The path to save the downloaded video.
+            extra_props (dict, optional): Extra properties for the download, e.g. referer.
 
         Returns:
             bool: True if the download was successful, False otherwise.
@@ -54,6 +55,9 @@ class YtdlpDownloader(BaseDownloader):
             'progress': True,
             **retry_opts,
         }
+
+        if extra_props and 'referer' in extra_props:
+            ydl_opts['http_headers'] = {'Referer': extra_props['referer']}
 
         if ffmpeg_exe:
             ydl_opts['ffmpeg_location'] = str(Path(ffmpeg_exe).parent)

@@ -191,6 +191,7 @@ O domínio costuma seguir o padrão *.astronmembers.com, mas instâncias customi
                     title=lesson.get("title", "Aula"),
                     size=0,
                     duration=0,
+                    extra_props={"referer": lesson_url}
                 )
             )
 

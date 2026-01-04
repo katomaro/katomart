@@ -212,6 +212,9 @@ Para usuários gratuitos: Como obter o token da Hotmart?:
             content.description = Description(text=description, description_type="html")
 
         for video_index, video_data in enumerate(data.get("medias", []), start=1):
+            extra_props = {"membership_code": membership_code} if membership_code else {}
+            extra_props["referer"] = f"https://{course_slug}.club.hotmart.com/"
+            
             content.videos.append(Video(
                 video_id=video_data.get("code"),
                 url=video_data.get("url"),
@@ -219,7 +222,7 @@ Para usuários gratuitos: Como obter o token da Hotmart?:
                 title=video_data.get("name", "video"),
                 size=video_data.get("size", 0),
                 duration=video_data.get("duration", 0),
-                extra_props={"membership_code": membership_code} if membership_code else {}
+                extra_props=extra_props
             ))
 
         attachment_url = f"https://api-club-course-consumption-gateway-ga.cb.hotmart.com/v1/pages/{lesson_hash}/complementary-content"

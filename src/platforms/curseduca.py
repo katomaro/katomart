@@ -315,6 +315,7 @@ Para plataformas whitelabel Curseduca:
                     title=lesson.get("title", "Aula"),
                     size=0,
                     duration=0,
+                    extra_props={"referer": self._base_url}
                 )
             )
 

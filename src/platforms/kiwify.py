@@ -497,6 +497,7 @@ Para usuários gratuitos: Como obter o token da Kiwify?:
                     title=video_info.get("name", "Aula"),
                     size=video_info.get("size", 0),
                     duration=video_info.get("duration", 0),
+                    extra_props={"referer": f"https://dashboard.kiwify.com.br/course/{course_id}/{lesson_id}"}
                 )
             )
 
