@@ -56,11 +56,54 @@ class YtdlpDownloader(BaseDownloader):
             **retry_opts,
         }
 
-        if extra_props and 'referer' in extra_props:
-            ydl_opts['http_headers'] = {'Referer': extra_props['referer']}
+        if self.settings.user_agent:
+            ydl_opts['user_agent'] = self.settings.user_agent
 
         if ffmpeg_exe:
             ydl_opts['ffmpeg_location'] = str(Path(ffmpeg_exe).parent)
+
+        if "vimeo" in url.lower():
+            vimeo_headers = {
+                "sec-ch-ua": self.settings.user_agent,
+                "sec-ch-ua-mobile": "?0",
+                "sec-ch-ua-platform": '"Windows"',
+                "sec-fetch-dest": "iframe",
+                "sec-fetch-mode": "navigate",
+                "sec-fetch-site": "cross-site",
+                "sec-fetch-storage-access": "active",
+                "upgrade-insecure-requests": "1"
+            }
+            
+            # Isso aqui eh bem feio, mas por hora vamos chutar primeiro uma tentativa sem o referer e depois outra com
+            opts_no_ref = ydl_opts.copy()
+            opts_no_ref['http_headers'] = vimeo_headers.copy()
+            
+            try:
+                with yt_dlp.YoutubeDL(opts_no_ref) as ydl:
+                    ydl.download([url])
+                return True
+            except Exception as e:
+                logging.warning(f"Vimeo download without referer failed: {e}. Retrying with referer...")
+                
+                referer = extra_props.get('referer') if extra_props else None
+                if not referer:
+                    logging.error("No referer available for retry.")
+                    return False
+
+                opts_with_ref = ydl_opts.copy()
+                opts_with_ref['http_headers'] = vimeo_headers.copy()
+                opts_with_ref['http_headers']['Referer'] = referer
+
+                try:
+                    with yt_dlp.YoutubeDL(opts_with_ref) as ydl:
+                        ydl.download([url])
+                    return True
+                except Exception as e2:
+                    logging.error(f"Vimeo download with referer failed: {e2}")
+                    return False
+
+        if extra_props and 'referer' in extra_props:
+            ydl_opts['http_headers'] = {'Referer': extra_props['referer']}
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
