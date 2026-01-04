@@ -185,8 +185,7 @@ class PandaVideoDownloader(BaseDownloader):
             metadata = self._fetch_metadata(master_url, local_session)
             
             if metadata.get("drm") == "true":
-                logging.warning(f"PandaVideo acusou o uso do Widevine, entre em contato com o autor pois isso é complicado painho. Metadata: {metadata}")
-                return False
+                logging.warning(f"PandaVideo acusou o uso de DRM, pode ser marca dagua no video ou Widevine, se o video nao rodar apos baixado, entre em contato com o katomaro. Metadata: {metadata}")
 
             streams = self._fetch_streams(master_url, local_session)
 
