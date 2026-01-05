@@ -304,6 +304,14 @@ class SettingsView(QWidget):
         for name, code in self.whisper_output_formats.items():
             self.whisper_output_format_combo.addItem(name, userData=code)
 
+        self.lesson_access_delay_spin = QSpinBox()
+        self.lesson_access_delay_spin.setRange(-1, 3600)
+        self.lesson_access_delay_spin.setSpecialValueText("Duração do Vídeo")
+        self.lesson_access_delay_spin.setToolTip(
+            "Tempo de espera entre downloads de aulas (em segundos).\n"
+            "Use -1 para esperar a duração do vídeo baixado."
+        )
+
         self.use_http_proxy_check.toggled.connect(self._update_proxy_fields_state)
         self._update_proxy_fields_state(False)
         self.use_whisper_transcription_check.toggled.connect(
@@ -320,6 +328,7 @@ class SettingsView(QWidget):
         )
         self._paid_form_layout.addRow("Delay para Retentativas (s):", self.retry_delay_spin)
         self._paid_form_layout.addRow(self.auto_reauth_check)
+        self._paid_form_layout.addRow("Delay entre aulas (s):", self.lesson_access_delay_spin)
         self._paid_form_layout.addRow(self.create_resume_summary_check)
         self._paid_form_layout.addRow(self.download_widevine_check)
         self._paid_form_layout.addRow("Caminho da CDM:", self.cdm_path_edit)
@@ -398,6 +407,7 @@ class SettingsView(QWidget):
         self.user_agent_edit.setText(settings.user_agent)
         self.max_concurrent_downloads_spin.setValue(settings.max_concurrent_segment_downloads)
         self.retry_attempts_spin.setValue(settings.download_retry_attempts)
+        self.lesson_access_delay_spin.setValue(getattr(settings, "lesson_access_delay", 0))
         self.retry_delay_spin.setValue(settings.download_retry_delay_seconds)
         self.auto_reauth_check.setChecked(getattr(settings, "auto_reauth_on_error", False))
         self.create_resume_summary_check.setChecked(
@@ -468,6 +478,7 @@ class SettingsView(QWidget):
             user_agent=self.user_agent_edit.text().strip(),
             download_retry_attempts=self.retry_attempts_spin.value(),
             download_retry_delay_seconds=self.retry_delay_spin.value(),
+            lesson_access_delay=self.lesson_access_delay_spin.value(),
             auto_reauth_on_error=self.auto_reauth_check.isChecked(),
             download_widevine=self.download_widevine_check.isChecked(),
             cdm_path=self.cdm_path_edit.text().strip(),

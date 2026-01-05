@@ -68,6 +68,7 @@ class AppSettings:
     allowed_attachment_extensions: list[str] = field(default_factory=list)
     ffmpeg_path: str = "./ffmpeg/bin"
     bento4_path: str = "./bento4/bin"
+    lesson_access_delay: int = 0
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "AppSettings":

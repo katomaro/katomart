@@ -19,14 +19,17 @@ from PySide6.QtWidgets import (
 )
 
 from src.config.settings_manager import SettingsManager
+from src.config.credentials_manager import CredentialsManager
 from src.platforms.base import AuthField, AuthFieldType, PlatformFactory
 
 ValueAccessor = Callable[[], Any]
+ValueSetter = Callable[[Any], None]
 
 
 @dataclass
 class AuthInputHandlers:
     accessor: ValueAccessor
+    setter: ValueSetter
     reset: Callable[[], None]
 
 
@@ -39,6 +42,7 @@ class AuthView(QWidget):
         """Initializes the view."""
         super().__init__(parent)
         self._settings_manager = settings_manager
+        self._credentials_manager = CredentialsManager()
         self._allowed_platforms: set[str] = set()
         self._is_premium_member = False
         self._active_dialogs: list[QMessageBox] = []
@@ -54,6 +58,17 @@ class AuthView(QWidget):
 
         layout.addLayout(self.form_layout)
         layout.addLayout(self.credentials_layout)
+
+        self.save_email_checkbox = QCheckBox("Salvar email")
+        layout.addWidget(self.save_email_checkbox)
+
+        self.save_password_checkbox = QCheckBox("Salvar senha")
+        self.save_password_checkbox.toggled.connect(self._on_save_password_toggled)
+        layout.addWidget(self.save_password_checkbox)
+
+        self.clear_credentials_button = QPushButton("Limpar dados salvos")
+        self.clear_credentials_button.clicked.connect(self._on_clear_credentials)
+        layout.addWidget(self.clear_credentials_button)
 
         self.platform_notice_label = QLabel()
         self.platform_notice_label.setWordWrap(True)
@@ -81,6 +96,19 @@ class AuthView(QWidget):
 
         self.refresh_membership_state()
 
+    def _on_save_password_toggled(self, checked: bool) -> None:
+        if checked:
+            QMessageBox.warning(
+                self,
+                "Aviso de Segurança",
+                "Salvar senha não é seguro pois aplicativos terceiros (ex: scripts para backup de terceiros) "
+                "podem procurar o arquivo do katomart (e também carteiras de criptomoedas) e os roubar."
+            )
+
+    def _on_clear_credentials(self) -> None:
+        self._credentials_manager.clear_credentials()
+        QMessageBox.information(self, "Sucesso", "Dados salvos limpos com sucesso.")
+
     def _on_list_products(self) -> None:
         """Emits the signal to request the product list."""
         platform_name = self.platform_combo.currentText()
@@ -93,6 +121,11 @@ class AuthView(QWidget):
             confirmation_event = threading.Event()
             credentials["manual_auth_confirmation"] = confirmation_event
             self._show_browser_emulation_dialog(confirmation_event)
+
+        if self.save_email_checkbox.isChecked() or self.save_password_checkbox.isChecked():
+            email = credentials.get("username") if self.save_email_checkbox.isChecked() else ""
+            password = credentials.get("password") if self.save_password_checkbox.isChecked() else ""
+            self._credentials_manager.save_credentials(platform_name, email or "", password or "")
 
         self.list_products_requested.emit(platform_name, credentials)
 
@@ -121,6 +154,20 @@ class AuthView(QWidget):
         settings = self._settings_manager.get_settings()
         self._allowed_platforms = set(settings.allowed_platforms or [])
         self._is_premium_member = settings.is_premium_member
+        
+        self.save_email_checkbox.setEnabled(self._is_premium_member)
+        self.save_password_checkbox.setEnabled(self._is_premium_member)
+        self.clear_credentials_button.setEnabled(self._is_premium_member)
+        
+        if not self._is_premium_member:
+            self.save_email_checkbox.setChecked(False)
+            self.save_password_checkbox.setChecked(False)
+            self.save_email_checkbox.setToolTip("Disponível apenas para assinantes.")
+            self.save_password_checkbox.setToolTip("Disponível apenas para assinantes.")
+        else:
+            self.save_email_checkbox.setToolTip("")
+            self.save_password_checkbox.setToolTip("")
+
         self._rebuild_platform_combo()
 
     def _rebuild_platform_combo(self) -> None:
@@ -185,6 +232,38 @@ class AuthView(QWidget):
         self.instructions_label.setText(platform_class.auth_instructions())
         self._update_list_button_state()
 
+        if self._is_premium_member:
+            saved_creds = self._credentials_manager.get_credentials(platform_name)
+            if saved_creds:
+                email = saved_creds.get("email")
+                password = saved_creds.get("password")
+                
+                self.save_email_checkbox.blockSignals(True)
+                self.save_password_checkbox.blockSignals(True)
+
+                if email:
+                    if "username" in self._auth_inputs:
+                        self._auth_inputs["username"].setter(email)
+                    self.save_email_checkbox.setChecked(True)
+                else:
+                    self.save_email_checkbox.setChecked(False)
+                
+                if password:
+                    if "password" in self._auth_inputs:
+                        self._auth_inputs["password"].setter(password)
+                    self.save_password_checkbox.setChecked(True)
+                else:
+                    self.save_password_checkbox.setChecked(False)
+
+                self.save_email_checkbox.blockSignals(False)
+                self.save_password_checkbox.blockSignals(False)
+            else:
+                self.save_email_checkbox.setChecked(False)
+                self.save_password_checkbox.setChecked(False)
+        else:
+            self.save_email_checkbox.setChecked(False)
+            self.save_password_checkbox.setChecked(False)
+
     def _clear_auth_fields(self) -> None:
         """Removes the previous authentication input widgets."""
         while self.credentials_layout.rowCount():
@@ -209,11 +288,11 @@ class AuthView(QWidget):
             if not field.required:
                 label_text = f"{label_text} (opcional)"
             label = QLabel(label_text)
-            input_widget, accessor, reset = self._create_input_widget(field)
+            input_widget, accessor, setter, reset = self._create_input_widget(field)
             self.credentials_layout.addRow(label, input_widget)
-            self._auth_inputs[field.name] = AuthInputHandlers(accessor, reset)
+            self._auth_inputs[field.name] = AuthInputHandlers(accessor, setter, reset)
 
-    def _create_input_widget(self, field: AuthField) -> tuple[QWidget, ValueAccessor, Callable[[], None]]:
+    def _create_input_widget(self, field: AuthField) -> tuple[QWidget, ValueAccessor, ValueSetter, Callable[[], None]]:
         """Builds the widget for a single authentication field."""
         requires_premium = field.requires_membership and not self._is_premium_member
 
@@ -223,6 +302,7 @@ class AuthView(QWidget):
             line_edit.setPlaceholderText(field.placeholder)
             widget: QWidget = line_edit
             accessor = lambda line=line_edit: line.text().strip()
+            setter = lambda val, line=line_edit: line.setText(str(val))
             reset = line_edit.clear
         elif field.field_type is AuthFieldType.MULTILINE:
             text_edit = QTextEdit()
@@ -230,6 +310,7 @@ class AuthView(QWidget):
             text_edit.setFixedHeight(max(80, text_edit.fontMetrics().lineSpacing() * 4))
             widget = text_edit
             accessor = lambda editor=text_edit: editor.toPlainText().strip()
+            setter = lambda val, editor=text_edit: editor.setText(str(val))
             reset = text_edit.clear
         elif field.field_type is AuthFieldType.KEY_VALUE_LIST:
             editor = _KeyValueEditor(
@@ -240,17 +321,20 @@ class AuthView(QWidget):
             )
             widget = editor
             accessor = editor.get_values
+            setter = lambda val: None
             reset = editor.reset_values
         elif field.field_type is AuthFieldType.CHECKBOX:
             checkbox = QCheckBox()
             widget = checkbox
             accessor = lambda toggle=checkbox: toggle.isChecked()
+            setter = lambda val, toggle=checkbox: toggle.setChecked(bool(val))
             reset = lambda toggle=checkbox: toggle.setChecked(False)
         else:
             line_edit = QLineEdit()
             line_edit.setPlaceholderText(field.placeholder)
             widget = line_edit
             accessor = lambda line=line_edit: line.text().strip()
+            setter = lambda val, line=line_edit: line.setText(str(val))
             reset = line_edit.clear
 
         if requires_premium:
@@ -262,9 +346,9 @@ class AuthView(QWidget):
                 widget.setPlaceholderText("Disponível apenas para assinantes.")
 
             empty_value = False if isinstance(widget, QCheckBox) else ""
-            return widget, (lambda: empty_value), (lambda: None)
+            return widget, (lambda: empty_value), (lambda val: None), (lambda: None)
 
-        return widget, accessor, reset
+        return widget, accessor, setter, reset
 
 
 class _KeyValueEditor(QWidget):

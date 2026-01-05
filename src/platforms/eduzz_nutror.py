@@ -17,7 +17,7 @@ from src.platforms.playwright_token_fetcher import PlaywrightTokenFetcher
 
 logger = logging.getLogger(__name__)
 
-LOGIN_URL = "https://accounts.eduzz.com/login?continue=https://app.nutror.com/"
+LOGIN_URL = "https://app.nutror.com"
 API_BASE_URL = "https://learner-api.nutror.com"
 SEARCH_URL = f"{API_BASE_URL}/learner/course/search"
 MODULES_URL = f"{API_BASE_URL}/learner/course/{{course_hash}}/modules/v2"
@@ -41,25 +41,17 @@ class NutrorTokenFetcher(PlaywrightTokenFetcher):
         ]
 
     async def fill_credentials(self, page: Page, username: str, password: str) -> None:
-        email_sel = "input[type='email'], input[name='email']"
+        email_sel = "#email-login"
         await page.wait_for_selector(email_sel)
         await page.fill(email_sel, username)
         
-        password_sel = "input[type='password'], input[name='password']"
-        if not await page.is_visible(password_sel):
-            next_btn = page.locator("button:has-text('Continuar'), button:has-text('Próximo')")
-            if await next_btn.count() > 0 and await next_btn.first.is_visible():
-                await next_btn.first.click()
-                await page.wait_for_selector(password_sel)
-
+        password_sel = "#password-login"
+        await page.wait_for_selector(password_sel)
         await page.fill(password_sel, password)
 
     async def submit_login(self, page: Page) -> None:
-        submit_btn = page.locator("button[type='submit'], button:has-text('Entrar'), button:has-text('Acessar')")
-        if await submit_btn.count() > 0:
-            await submit_btn.first.click()
-        else:
-            await page.press("body", "Enter")
+        submit_btn = page.locator("#signin")
+        await submit_btn.first.click()
 
 class NutrorPlatform(BasePlatform):
     """Implementação da plataforma Nutror (Eduzz)."""

@@ -358,6 +358,27 @@ class DownloadWorker(QRunnable):
         subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
         return audio_path
 
+    def _get_video_duration(self, video_path: Path) -> float:
+        """Uses ffmpeg to get video duration in seconds."""
+        ffmpeg_path = getattr(self.settings, "ffmpeg_path", None)
+        ffmpeg_exe = get_executable_path("ffmpeg", ffmpeg_path)
+
+        if not ffmpeg_exe:
+            logging.warning("??? ffmpeg not found for duration check.")
+            return 0.0
+        cmd = [ffmpeg_exe, "-i", str(video_path)]
+        try:
+            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace')
+            # Search for "Duration: 00:00:00.00"
+            match = re.search(r"Duration:\s*(\d+):(\d+):(\d+\.\d+)", result.stderr)
+            if match:
+                hours, minutes, seconds = map(float, match.groups())
+                return hours * 3600 + minutes * 60 + seconds
+        except Exception as e:
+            logging.error(f"Failed to get video duration: {e}")
+
+        return 0.0
+
     def _load_whisper_model(self):
         if self._whisper_model is None:
             import whisper
@@ -509,6 +530,7 @@ class DownloadWorker(QRunnable):
                         lesson_title_full = f"{lesson_order}. {lesson_title}"
                         lesson_path = module_path / lesson_title_full
                         lesson_path.mkdir(parents=True, exist_ok=True)
+                        last_downloaded_video_path: Optional[Path] = None
                         try:
                             self.signals.result.emit(f"    - Obtendo detalhes para a aula: {lesson_title}")
                             lesson_details = self._run_with_retries(
@@ -645,6 +667,7 @@ class DownloadWorker(QRunnable):
                                         ),
                                         description=f"Download do vídeo '{video_name}'",
                                     )
+                                    last_downloaded_video_path = video_path
                                     self._mark_resume_status(
                                         course_id_str, module_key, lesson_key, "videos", video_key, True
                                     )
@@ -761,6 +784,18 @@ class DownloadWorker(QRunnable):
                         lessons_processed += 1
                         progress = int((lessons_processed / total_lessons) * 100) if total_lessons > 0 else 0
                         self.signals.progress.emit(progress)
+
+                        delay_setting = getattr(self.settings, "lesson_access_delay", 0)
+                        if delay_setting != 0:
+                            wait_time = 0.0
+                            if delay_setting > 0:
+                                wait_time = float(delay_setting)
+                            elif delay_setting == -1 and last_downloaded_video_path and last_downloaded_video_path.exists():
+                                wait_time = self._get_video_duration(last_downloaded_video_path)
+                            
+                            if wait_time > 0:
+                                self.signals.result.emit(f"    - Aguardando {wait_time:.1f}s antes da próxima aula...")
+                                time.sleep(wait_time)
 
             self.signals.result.emit("Processo de download concluído.")
             if total_lessons == 0:
