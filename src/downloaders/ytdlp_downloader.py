@@ -64,17 +64,19 @@ class YtdlpDownloader(BaseDownloader):
 
         if "vimeo" in url.lower():
             vimeo_headers = {
-                "sec-ch-ua": self.settings.user_agent,
-                "sec-ch-ua-mobile": "?0",
-                "sec-ch-ua-platform": '"Windows"',
-                "sec-fetch-dest": "iframe",
-                "sec-fetch-mode": "navigate",
-                "sec-fetch-site": "cross-site",
-                "sec-fetch-storage-access": "active",
-                "upgrade-insecure-requests": "1"
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+                "Cache-Control": "no-cache",
+                "Pragma": "no-cache",
+                "Priority": "u=0, i",
+                "Sec-Fetch-Dest": "document",
+                "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-Site": "none",
+                "Sec-Fetch-User": "?1",
+                "Upgrade-Insecure-Requests": "1",
             }
             
-            # Isso aqui eh bem feio, mas por hora vamos chutar primeiro uma tentativa sem o referer e depois outra com
+            # Attempt 1: Without Referer
             opts_no_ref = ydl_opts.copy()
             opts_no_ref['http_headers'] = vimeo_headers.copy()
             
