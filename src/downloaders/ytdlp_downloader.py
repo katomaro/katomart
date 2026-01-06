@@ -63,29 +63,13 @@ class YtdlpDownloader(BaseDownloader):
             ydl_opts['ffmpeg_location'] = str(Path(ffmpeg_exe).parent)
 
         if "vimeo" in url.lower():
-            vimeo_headers = {
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
-                "Cache-Control": "no-cache",
-                "Pragma": "no-cache",
-                "Priority": "u=0, i",
-                "Sec-Fetch-Dest": "document",
-                "Sec-Fetch-Mode": "navigate",
-                "Sec-Fetch-Site": "none",
-                "Sec-Fetch-User": "?1",
-                "Upgrade-Insecure-Requests": "1",
-            }
-            
-            # Attempt 1: Without Referer
-            opts_no_ref = ydl_opts.copy()
-            opts_no_ref['http_headers'] = vimeo_headers.copy()
-            
+            # Attempt 1: Standard download (let yt-dlp handle headers)
             try:
-                with yt_dlp.YoutubeDL(opts_no_ref) as ydl:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     ydl.download([url])
                 return True
             except Exception as e:
-                logging.warning(f"Vimeo download without referer failed: {e}. Retrying with referer...")
+                logging.warning(f"Standard Vimeo download failed: {e}. Retrying with referer...")
                 
                 referer = extra_props.get('referer') if extra_props else None
                 if not referer:
@@ -93,8 +77,7 @@ class YtdlpDownloader(BaseDownloader):
                     return False
 
                 opts_with_ref = ydl_opts.copy()
-                opts_with_ref['http_headers'] = vimeo_headers.copy()
-                opts_with_ref['http_headers']['Referer'] = referer
+                opts_with_ref['http_headers'] = {'Referer': referer}
 
                 try:
                     with yt_dlp.YoutubeDL(opts_with_ref) as ydl:

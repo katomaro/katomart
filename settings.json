@@ -22,6 +22,7 @@
     "run_ffmpeg": false,
     "ffmpeg_args": "-c copy",
     "download_embedded_videos": true,
+    "auto_reauth_on_error": false,
     "embed_domain_blacklist": [
         "docs.google.com",
         "drive.google.com",
@@ -51,5 +52,6 @@
     "delete_folder_on_error": false,
     "allowed_attachment_extensions": [],
     "ffmpeg_path": "./ffmpeg/bin",
-    "bento4_path": "./bento4/bin"
+    "bento4_path": "./bento4/bin",
+    "lesson_access_delay": 0
 }

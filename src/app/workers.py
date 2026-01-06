@@ -5,6 +5,7 @@ import subprocess
 import time
 import shutil
 import html
+import inspect
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -621,9 +622,13 @@ class DownloadWorker(QRunnable):
 
                                                 downloader = DownloaderFactory.get_downloader(emb_url, self.settings_manager)
                                                 try:
+                                                    extra_props = {}
+                                                    if self.platform_name == "hotmart" and course_slug:
+                                                        extra_props["referer"] = f"https://{course_slug}.club.hotmart.com/"
+
                                                     self._run_with_retries(
                                                         lambda: downloader.download_video(
-                                                            emb_url, self.platform.get_session(), emb_path
+                                                            emb_url, self.platform.get_session(), emb_path, extra_props=extra_props
                                                         ),
                                                         description=f"Download do vídeo linkado '{emb_name}'",
                                                     )
@@ -635,7 +640,7 @@ class DownloadWorker(QRunnable):
                                                         exc_info=True,
                                                     )
                                                     self.signals.result.emit(
-                                                        f"    - [ERROR] Falha ao baixar vídeo linkado: {emb_url}"
+                                                        f"    - [ERROR] Falha ao baixar link encontrado (pode ser propaganda, etc): {emb_url}"
                                                     )
                                     self.signals.result.emit(f"      - Descrição salva em {description_path}")
 
@@ -655,15 +660,11 @@ class DownloadWorker(QRunnable):
                                     continue
 
                                 try:
-                                    import inspect
-                                    sig = inspect.signature(downloader.download_video)
-                                    kwargs = {}
-                                    if 'extra_props' in sig.parameters:
-                                        kwargs['extra_props'] = getattr(video, 'extra_props', {})
+                                    extra_props = getattr(video, 'extra_props', {})
 
                                     self._run_with_retries(
                                         lambda: downloader.download_video(
-                                            video.url, self.platform.get_session(), video_path, **kwargs
+                                            video.url, self.platform.get_session(), video_path, extra_props=extra_props
                                         ),
                                         description=f"Download do vídeo '{video_name}'",
                                     )
@@ -747,7 +748,11 @@ class DownloadWorker(QRunnable):
                                     try:
                                         with open(aux_path, 'w', encoding='utf-8') as aux_file:
                                             for aux_index, aux in enumerate(lesson_details.auxiliary_urls, start=1):
-                                                aux_file.write(f"{aux_index}. {aux}\n")
+                                                if hasattr(aux, 'url'):
+                                                    text = f"{aux.description or aux.title or 'Link'}: {aux.url}"
+                                                else:
+                                                    text = str(aux)
+                                                aux_file.write(f"{aux_index}. {text}\n")
                                         self._mark_resume_status(
                                             course_id_str, module_key, lesson_key, "auxiliary_urls", None, True
                                         )

@@ -55,7 +55,7 @@ class ScaleUpDownloader(BaseDownloader):
             logging.error(f"[ScaleUp Error] {e}")
             return None
 
-    def download_video(self, url: str, session: requests.Session, download_path: Path) -> bool:
+    def download_video(self, url: str, session: requests.Session, download_path: Path, extra_props: dict = None) -> bool:
         """
         Downloads the video from the ScaleUp embed URL.
         """

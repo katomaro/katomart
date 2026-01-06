@@ -155,7 +155,7 @@ class PandaVideoDownloader(BaseDownloader):
         logging.info(f"Selected PandaVideo quality: {selected.get('height')}p (Bandwidth: {selected.get('bandwidth')})")
         return selected.get('url')
 
-    def download_video(self, url: str, session: requests.Session, download_path: Path) -> bool:
+    def download_video(self, url: str, session: requests.Session, download_path: Path, extra_props: dict = None) -> bool:
         """
         Orchestrates the download process for PandaVideo using a fresh session
         that mimics the player's internal request headers.

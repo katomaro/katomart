@@ -614,7 +614,21 @@ Para usuários gratuitos: Como obter o token da Kiwify?:
                 logging.error("Anexo sem URL disponível: %s", attachment.filename)
                 return False
 
-            response = self._session.get(download_url, stream=True)
+            if "storage.googleapis.com" in download_url:
+                headers = {
+                    "User-Agent": self._settings.user_agent,
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+                    "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+                    "Upgrade-Insecure-Requests": "1",
+                    "Sec-Fetch-Dest": "document",
+                    "Sec-Fetch-Mode": "navigate",
+                    "Sec-Fetch-Site": "cross-site",
+                    "Sec-Fetch-User": "?1",
+                }
+                response = requests.get(download_url, stream=True, headers=headers)
+            else:
+                response = self._session.get(download_url, stream=True)
+
             response.raise_for_status()
             with open(download_path, "wb") as file_handle:
                 for chunk in response.iter_content(chunk_size=8192):

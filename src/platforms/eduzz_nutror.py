@@ -3,8 +3,10 @@ from __future__ import annotations
 import logging
 import json
 import time
+import asyncio
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 from playwright.async_api import Page
@@ -20,13 +22,16 @@ logger = logging.getLogger(__name__)
 LOGIN_URL = "https://app.nutror.com"
 API_BASE_URL = "https://learner-api.nutror.com"
 SEARCH_URL = f"{API_BASE_URL}/learner/course/search"
-MODULES_URL = f"{API_BASE_URL}/learner/course/{{course_hash}}/modules/v2"
-LESSON_DETAILS_URL = f"{API_BASE_URL}/learner/lessons/{{lesson_hash}}/v2"
+MODULES_URL = f"{API_BASE_URL}/learner/course/{{course_hash}}/lessons/v2"
+LESSON_DETAILS_URL = f"{API_BASE_URL}/learner/lessons/{{lesson_hash}}"
 
 # token dessa plataforma dura 12 minutos.
 
 class NutrorTokenFetcher(PlaywrightTokenFetcher):
     """Automatiza o login na Eduzz/Nutror para capturar o token."""
+
+    def __init__(self):
+        self.captured_cookies: List[Dict[str, Any]] = []
 
     @property
     def login_url(self) -> str:
@@ -53,12 +58,30 @@ class NutrorTokenFetcher(PlaywrightTokenFetcher):
         submit_btn = page.locator("#signin")
         await submit_btn.first.click()
 
+    async def _capture_authorization_header(self, page: Page) -> Tuple[Optional[str], Optional[str]]:
+        """
+        Override to capture token from cookies if header capture fails or as a fallback.
+        Eduzz stores the token in 'newAuthToken' cookie.
+        """
+        start_time = time.time()
+        while time.time() - start_time < (self.network_idle_timeout_ms / 1000):
+            cookies = await page.context.cookies()
+            for cookie in cookies:
+                if cookie['name'] == 'newAuthToken':
+                    self.captured_cookies = cookies
+                    return f"Bearer {cookie['value']}", page.url
+
+            await asyncio.sleep(0.5)
+            
+        return None, None
+
 class NutrorPlatform(BasePlatform):
     """Implementação da plataforma Nutror (Eduzz)."""
 
     def __init__(self, api_service: ApiService, settings_manager: SettingsManager):
         super().__init__(api_service, settings_manager)
         self._token_fetcher = NutrorTokenFetcher()
+        self.cookies: List[Dict[str, Any]] = []
 
     @classmethod
     def auth_fields(cls) -> List[AuthField]:
@@ -67,7 +90,8 @@ class NutrorPlatform(BasePlatform):
     @classmethod
     def auth_instructions(cls) -> str:
         return """
-Para autenticação manual (Token Direto):
+ATENÇÃO: EM CONFIGURAÇÕES VOCÊ DEVE ATIVAR REAUTENTICAÇÃO AUTOMÁTICA, A SESSÃO DESSA PLATAFORMA DUA 12 MINUTOS!
+Para autenticação manual (Token Direto, não recomendado, use credenciais se possível):
 1. Acesse https://app.nutror.com, faça login e aperte F12.
 2. Vá na aba 'Rede' (Network) e filtre por 'search'.
 3. Recarregue a página (F5).
@@ -85,12 +109,14 @@ Para autenticação manual (Token Direto):
         confirmation_event = credentials.get("manual_auth_confirmation")
         
         try:
-            return self._token_fetcher.fetch_token(
+            token = self._token_fetcher.fetch_token(
                 username,
                 password,
                 headless=not use_browser_emulation,
                 wait_for_user_confirmation=(confirmation_event.wait if confirmation_event else None),
             )
+            self.cookies = self._token_fetcher.captured_cookies
+            return token
         except Exception as exc:
             raise ConnectionError("Falha ao autenticar na Nutror via navegador.") from exc
 
@@ -107,6 +133,70 @@ Para autenticação manual (Token Direto):
             "Accept": "application/json, text/plain, */*",
             "FrontVersion": "1458"
         })
+
+    def refresh_auth(self) -> None:
+        """
+        Refreshes the authentication session using the refresh token flow.
+        """
+        if not self._session:
+            return super().refresh_auth()
+
+        if self._attempt_api_refresh():
+            return
+
+        try:
+            logger.info("Refreshing Eduzz session via re-authentication...")
+            self.authenticate(self.credentials)
+        except Exception as e:
+            logger.error(f"Failed to refresh Eduzz session: {e}")
+            raise
+
+    def _attempt_api_refresh(self) -> bool:
+        if not self.cookies or not self._session:
+            return False
+            
+        refresh_token = next((c['value'] for c in self.cookies if c['name'] == 'refreshToken'), None)
+        if not refresh_token:
+            return False
+            
+        try:
+            url = "https://learner-api.nutror.com/oauth/refresh?startWhen=requestFailed"
+
+            cookie_dict = {c['name']: c['value'] for c in self.cookies}
+
+            headers = {
+                "RefreshToken": refresh_token,
+                "Authorization": self._session.headers.get("Authorization", ""),
+                "User-Agent": self._session.headers.get("User-Agent", ""),
+                "Origin": "https://app.nutror.com",
+                "Referer": "https://app.nutror.com/",
+            }
+
+            response = requests.post(url, headers=headers, cookies=cookie_dict)
+            response.raise_for_status()
+
+            data = response.json()
+            new_token = data.get("data", {}).get("token")
+
+            if new_token:
+                logger.info("Eduzz session refreshed successfully via API.")
+                self._configure_session(new_token)
+
+                for cookie in response.cookies:
+                    found = False
+                    for c in self.cookies:
+                        if c['name'] == cookie.name:
+                            c['value'] = cookie.value
+                            found = True
+                            break
+                    if not found:
+                        self.cookies.append({'name': cookie.name, 'value': cookie.value})
+                return True
+                
+        except Exception as e:
+            logger.warning(f"Eduzz API refresh failed: {e}")
+            
+        return False
 
     def fetch_courses(self) -> List[Dict[str, Any]]:
         if not self._session:
@@ -138,9 +228,21 @@ Para autenticação manual (Token Direto):
                     break
 
                 for item in items:
-                    course_id = item.get("course_hash") or item.get("id")
+                    expire_at = item.get("expire_at")
                     title = item.get("title")
-                    producer = item.get("producer", {}).get("name", "Desconhecido")
+
+                    if expire_at:
+                        try:
+                            # Ex: "2022-01-27T11:08:29.000Z"
+                            expire_dt = datetime.fromisoformat(expire_at.replace("Z", "+00:00"))
+                            if expire_dt < datetime.now(expire_dt.tzinfo):
+                                logger.info(f"Pulnado curso expirado: {title} (Expirou em {expire_at})")
+                                continue
+                        except Exception as e:
+                            logger.warning(f"Erro ao verificar expiração do curso {title}: {e}")
+
+                    course_id = item.get("hash") or item.get("course_hash") or item.get("id")
+                    producer = item.get("author", {}).get("name") or item.get("producer", {}).get("name") or "Desconhecido"
                     
                     courses.append({
                         "id": str(course_id),
@@ -149,7 +251,12 @@ Para autenticação manual (Token Direto):
                         "slug": str(course_id)
                     })
 
-                total_pages = data.get("total_pages", 1)
+                page_info = data.get("page", {})
+                if isinstance(page_info, dict):
+                    total_pages = page_info.get("total_pages", 1)
+                else:
+                    total_pages = data.get("total_pages", 1)
+
                 if page >= total_pages:
                     break
                 
@@ -174,23 +281,55 @@ Para autenticação manual (Token Direto):
             url = MODULES_URL.format(course_hash=course_id)
             
             try:
-                response = self._session.get(url)
-                response.raise_for_status()
-                data = response.json()
+                modules_raw = []
+                page = 1
                 
-                modules_raw = data.get("data", [])
+                while True:
+                    response = self._session.get(url, params={"page": page, "size": 10})
+                    response.raise_for_status()
+                    data = response.json()
+                    
+                    current_page_modules = data.get("data", [])
+                    if not current_page_modules:
+                        break
+                        
+                    modules_raw.extend(current_page_modules)
+                    
+                    total_pages = data.get("total_pages")
+                    if total_pages is None and "page" in data:
+                        total_pages = data["page"].get("total_pages", 1)
+                    if total_pages is None: total_pages = 1
+
+                    if page >= total_pages:
+                        break
+                    
+                    page += 1
+                    time.sleep(0.5)
+
                 processed_modules = []
 
-                for mod in modules_raw:
-                    module_title = mod.get("title", f"Módulo {mod.get('position')}")
+                for i, mod in enumerate(modules_raw, start=1):
+                    module_title = mod.get("title") or f"Módulo {i}"
                     lessons_raw = mod.get("lessons", [])
                     
                     processed_lessons = []
-                    for lesson in lessons_raw:
+                    for j, lesson in enumerate(lessons_raw, start=1):
+                        expired_at = lesson.get("expired_at")
+                        lesson_title = lesson.get("title")
+
+                        if expired_at:
+                            try:
+                                expire_dt = datetime.fromisoformat(expired_at.replace("Z", "+00:00"))
+                                if expire_dt < datetime.now(expire_dt.tzinfo):
+                                    logger.info(f"Pulando aula expirada: {lesson_title}")
+                                    continue
+                            except Exception:
+                                pass
+                        
                         processed_lessons.append({
-                            "id": lesson.get("lesson_hash") or lesson.get("id"),
-                            "title": lesson.get("title"),
-                            "order": lesson.get("position", 0),
+                            "id": lesson.get("hash") or lesson.get("lesson_hash") or lesson.get("id"),
+                            "title": lesson_title,
+                            "order": j,
                         })
 
                     if processed_lessons:
@@ -198,7 +337,7 @@ Para autenticação manual (Token Direto):
                             "id": str(mod.get("id", "")),
                             "title": module_title,
                             "lessons": processed_lessons,
-                            "order": mod.get("position", 0)
+                            "order": i
                         })
 
                 course_content = course.copy()
@@ -221,43 +360,55 @@ Para autenticação manual (Token Direto):
         content = LessonContent()
 
         try:
-            response = self._session.get(url)
+            response = self._session.get(url, params={"forceManual": "true"})
             response.raise_for_status()
             data = response.json()
             lesson_data = data.get("data", {})
 
-            if lesson_data.get("content"):
+            desc_text = lesson_data.get("description") or lesson_data.get("content")
+            if desc_text:
                 content.description = Description(
-                    text=lesson_data.get("content"),
+                    text=desc_text,
                     description_type="html"
                 )
 
-            media_list = lesson_data.get("media", [])
-            if isinstance(media_list, dict):
-                media_list = [media_list]
-
-            for idx, media in enumerate(media_list, 1):
-                video_url = media.get("url") or media.get("hls")
-
-                if not video_url and media.get("type") == "youtube":
-                    video_url = media.get("video_id")
-
+            contents = lesson_data.get("contents", [])
+            video_idx = 1
+            for item in contents:
+                type_id = item.get("type", {}).get("id")
+                video_url = None
+                
+                # Type 9: SafeVideo / Bunkr
+                if type_id == 9:
+                    video_url = item.get("embed")
+                else:
+                    logger.debug(f"Nutror: Conteúdo não tratado encontrado (Type {type_id}): {item}")
+                
+                # Type 4: Text (usually ignored or handled as description, but sometimes in contents)
+                
                 if video_url:
                     content.videos.append(Video(
-                        video_id=str(media.get("id", idx)),
+                        video_id=str(item.get("id")),
                         url=video_url,
-                        title=media.get("title", f"Vídeo {idx}"),
-                        order=idx
+                        title=lesson_data.get("title") or f"Vídeo {video_idx}",
+                        order=item.get("sequence", video_idx),
+                        size=0,
+                        duration=0
                     ))
+                    video_idx += 1
 
-            files = lesson_data.get("files", [])
+            files = lesson_data.get("lesson_files", [])
             for idx, file_item in enumerate(files, 1):
+                file_path = file_item.get("file_name")
+                file_url = f"{API_BASE_URL}{file_path}" if file_path and file_path.startswith("/") else file_url
+                
                 content.attachments.append(Attachment(
-                    attachment_id=str(file_item.get("id")),
-                    url=file_item.get("url"),
-                    filename=file_item.get("title") or file_item.get("fileName", f"Anexo {idx}"),
+                    attachment_id=str(file_item.get("id_lesson_file") or file_item.get("id")),
+                    url=file_url,
+                    filename=file_item.get("title") or f"Anexo {idx}",
                     extension=file_item.get("extension", ""),
-                    order=idx
+                    order=idx,
+                    size=0
                 ))
 
         except Exception as e:
