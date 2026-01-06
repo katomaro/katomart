@@ -66,8 +66,23 @@ def truncate_filename_preserve_ext(filename: str, max_len: int, replacement: str
         return filename
 
     p = Path(filename)
-    stem = sanitize_path_component(p.stem, replacement)
-    suffix = "".join(p.suffixes)
+    suffixes = p.suffixes
+    keep_suffixes = []
+    
+    for i in range(len(suffixes) - 1, -1, -1):
+        s = suffixes[i]
+        if ' ' in s:
+            break
+        keep_suffixes.insert(0, s)
+
+    suffix = "".join(keep_suffixes)
+    
+    if suffix:
+        stem = filename[:-len(suffix)]
+    else:
+        stem = filename
+        
+    stem = sanitize_path_component(stem, replacement)
 
     if not suffix:
         return truncate_component(stem, max_len)
