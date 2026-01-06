@@ -170,7 +170,11 @@ Para autenticação manual (Token Direto, não recomendado, use credenciais se p
                 "User-Agent": self._session.headers.get("User-Agent", ""),
                 "Origin": "https://app.nutror.com",
                 "Referer": "https://app.nutror.com/",
+                "Accept": "application/json, text/plain, */*",
             }
+
+            if "FrontVersion" in self._session.headers:
+                headers["FrontVersion"] = self._session.headers["FrontVersion"]
 
             response = requests.post(url, headers=headers, cookies=cookie_dict)
             response.raise_for_status()
@@ -191,6 +195,16 @@ Para autenticação manual (Token Direto, não recomendado, use credenciais se p
                             break
                     if not found:
                         self.cookies.append({'name': cookie.name, 'value': cookie.value})
+
+                updated_token_cookie = False
+                for c in self.cookies:
+                    if c['name'] == 'newAuthToken':
+                        c['value'] = new_token
+                        updated_token_cookie = True
+                        break
+                if not updated_token_cookie:
+                    self.cookies.append({'name': 'newAuthToken', 'value': new_token})
+
                 return True
                 
         except Exception as e:
