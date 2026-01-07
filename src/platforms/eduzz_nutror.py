@@ -66,10 +66,11 @@ class NutrorTokenFetcher(PlaywrightTokenFetcher):
         start_time = time.time()
         while time.time() - start_time < (self.network_idle_timeout_ms / 1000):
             cookies = await page.context.cookies()
-            for cookie in cookies:
-                if cookie['name'] == 'newAuthToken':
-                    self.captured_cookies = cookies
-                    return f"Bearer {cookie['value']}", page.url
+            cookie_names = {c['name']: c['value'] for c in cookies}
+            
+            if 'newAuthToken' in cookie_names and 'refreshToken' in cookie_names:
+                self.captured_cookies = cookies
+                return f"Bearer {cookie_names['newAuthToken']}", page.url
 
             await asyncio.sleep(0.5)
             
@@ -101,6 +102,7 @@ Para autenticação manual (Token Direto, não recomendado, use credenciais se p
 """.strip()
 
     def authenticate(self, credentials: Dict[str, Any]) -> None:
+        self.credentials = credentials
         token = self.resolve_access_token(credentials, self._exchange_credentials_for_token)
         self._configure_session(token)
 
@@ -138,14 +140,20 @@ Para autenticação manual (Token Direto, não recomendado, use credenciais se p
         """
         Refreshes the authentication session using the refresh token flow.
         """
+        logger.info("Nutror: Initiating auth refresh sequence...")
         if not self._session:
+            logger.warning("Nutror: Session not initialized, delegating to base refresh.")
             return super().refresh_auth()
 
         if self._attempt_api_refresh():
             return
 
         try:
-            logger.info("Refreshing Eduzz session via re-authentication...")
+            logger.info("Refreshing Eduzz session via re-authentication (Full Login)...")
+            if not self.credentials:
+                logger.error("Nutror: No credentials available for re-authentication.")
+                raise ValueError("Credenciais não encontradas para re-autenticação manual.")
+                
             self.authenticate(self.credentials)
         except Exception as e:
             logger.error(f"Failed to refresh Eduzz session: {e}")
@@ -153,13 +161,16 @@ Para autenticação manual (Token Direto, não recomendado, use credenciais se p
 
     def _attempt_api_refresh(self) -> bool:
         if not self.cookies or not self._session:
+            logger.debug("Nutror: Cannot api-refresh, cookies or session missing.")
             return False
             
         refresh_token = next((c['value'] for c in self.cookies if c['name'] == 'refreshToken'), None)
         if not refresh_token:
+            logger.warning("Nutror: 'refreshToken' cookie not found. Skipping API refresh.")
             return False
             
         try:
+            logger.info("Nutror: Attempting API token refresh using 'refreshToken' cookie...")
             url = "https://learner-api.nutror.com/oauth/refresh?startWhen=requestFailed"
 
             cookie_dict = {c['name']: c['value'] for c in self.cookies}
