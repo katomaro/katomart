@@ -373,60 +373,56 @@ Para autenticação manual (Token Direto, não recomendado, use credenciais se p
 
         content = LessonContent()
 
-        try:
-            response = self._session.get(url, params={"forceManual": "true"})
-            response.raise_for_status()
-            data = response.json()
-            lesson_data = data.get("data", {})
+        response = self._session.get(url, params={"forceManual": "true"})
+        response.raise_for_status()
+        data = response.json()
+        lesson_data = data.get("data", {})
 
-            desc_text = lesson_data.get("description") or lesson_data.get("content")
-            if desc_text:
-                content.description = Description(
-                    text=desc_text,
-                    description_type="html"
-                )
+        desc_text = lesson_data.get("description") or lesson_data.get("content")
+        if desc_text:
+            content.description = Description(
+                text=desc_text,
+                description_type="html"
+            )
 
-            contents = lesson_data.get("contents", [])
-            video_idx = 1
-            for item in contents:
-                type_id = item.get("type", {}).get("id")
-                video_url = None
-                
-                # Type 9: SafeVideo / Bunkr
-                if type_id == 9:
-                    video_url = item.get("embed")
-                else:
-                    logger.debug(f"Nutror: Conteúdo não tratado encontrado (Type {type_id}): {item}")
-                
-                # Type 4: Text (usually ignored or handled as description, but sometimes in contents)
-                
-                if video_url:
-                    content.videos.append(Video(
-                        video_id=str(item.get("id")),
-                        url=video_url,
-                        title=lesson_data.get("title") or f"Vídeo {video_idx}",
-                        order=item.get("sequence", video_idx),
-                        size=0,
-                        duration=0
-                    ))
-                    video_idx += 1
-
-            files = lesson_data.get("lesson_files", [])
-            for idx, file_item in enumerate(files, 1):
-                file_path = file_item.get("file_name")
-                file_url = f"{API_BASE_URL}{file_path}" if file_path and file_path.startswith("/") else file_url
-                
-                content.attachments.append(Attachment(
-                    attachment_id=str(file_item.get("id_lesson_file") or file_item.get("id")),
-                    url=file_url,
-                    filename=file_item.get("title") or f"Anexo {idx}",
-                    extension=file_item.get("extension", ""),
-                    order=idx,
-                    size=0
+        contents = lesson_data.get("contents", [])
+        video_idx = 1
+        for item in contents:
+            type_id = item.get("type", {}).get("id")
+            video_url = None
+            
+            # Type 9: SafeVideo / Bunkr
+            if type_id == 9:
+                video_url = item.get("embed")
+            else:
+                logger.debug(f"Nutror: Conteúdo não tratado encontrado (Type {type_id}): {item}")
+            
+            # Type 4: Text (usually ignored or handled as description, but sometimes in contents)
+            
+            if video_url:
+                content.videos.append(Video(
+                    video_id=str(item.get("id")),
+                    url=video_url,
+                    title=lesson_data.get("title") or f"Vídeo {video_idx}",
+                    order=item.get("sequence", video_idx),
+                    size=0,
+                    duration=0
                 ))
+                video_idx += 1
 
-        except Exception as e:
-            logger.error(f"Erro ao detalhar aula {lesson_hash}: {e}")
+        files = lesson_data.get("lesson_files", [])
+        for idx, file_item in enumerate(files, 1):
+            file_path = file_item.get("file_name")
+            file_url = f"{API_BASE_URL}{file_path}" if file_path and file_path.startswith("/") else file_url
+            
+            content.attachments.append(Attachment(
+                attachment_id=str(file_item.get("id_lesson_file") or file_item.get("id")),
+                url=file_url,
+                filename=file_item.get("title") or f"Anexo {idx}",
+                extension=file_item.get("extension", ""),
+                order=idx,
+                size=0
+            ))
 
         return content
 
@@ -437,15 +433,11 @@ Para autenticação manual (Token Direto, não recomendado, use credenciais se p
         url = attachment.url
         if not url: return False
 
-        try:
-            with self._session.get(url, stream=True) as r:
-                r.raise_for_status()
-                with open(download_path, 'wb') as f:
-                    for chunk in r.iter_content(chunk_size=8192):
-                        f.write(chunk)
-            return True
-        except Exception as e:
-            logger.error(f"Falha no download do anexo Nutror: {e}")
-            return False
+        with self._session.get(url, stream=True) as r:
+            r.raise_for_status()
+            with open(download_path, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
+        return True
 
 PlatformFactory.register_platform("Eduzz/Nutror", NutrorPlatform)
