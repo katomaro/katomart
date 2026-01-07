@@ -1,5 +1,6 @@
 import json
 import logging
+import webbrowser
 from pathlib import Path
 from typing import Any
 from PySide6.QtCore import QThreadPool, QTimer
@@ -23,7 +24,7 @@ class MainWindow(QMainWindow):
     def __init__(self, settings_manager: SettingsManager, parent: QWidget | None = None) -> None:
         """Initializes the main window."""
         super().__init__(parent)
-        self.setWindowTitle("Katomart! Visite o Repositório em https://github.com/katomaro/katomart")
+        self.setWindowTitle("Katomart! Visite o Repositório em github.com/katomaro/katomart ou assine em katomaro.com/store/katomart")
         self.setMinimumSize(600, 400)
         self.resize(700, 650)
 
@@ -61,11 +62,16 @@ class MainWindow(QMainWindow):
 
     def _show_subscription_prompt(self) -> None:
         """Displays a pop-up encouraging the monthly subscription."""
+        settings = self._settings_manager.get_settings()
+        if settings.membership_email:
+            return
+
         message = (
             "Manter um Software desse nível \u00e9 um trabalho extensivo e custoso, que exige muito tempo e estudo, além de acessos legítimos em plataformas. "
-            "Com uma assinatura mensal de apenas R$5, você pode ajudar a manter o Katomart! ativo e em constante melhoria, além de desbloquear funções extras e poderosas.\n\n"
-            "Visite https://katomaro.com/store/katomart e conhe\u00e7a os benefícios."
+            "Com uma assinatura mensal de apenas R$9.90, você pode ajudar a manter o Katomart! ativo e em constante melhoria, além de desbloquear downloads mais rápido e funções extras poderosas.\n\n"
+            "Visite https://katomaro.com/store/katomart e conhe\u00e7a os benefícios. Uma janela no seu navegador foi aberta para você verificar."
         )
+        webbrowser.open("https://katomaro.com/store/katomart")
         QMessageBox.information(self, "Suporte o Katomart!", message)
 
     def _connect_signals(self) -> None:
@@ -74,6 +80,7 @@ class MainWindow(QMainWindow):
         self.course_selection_view.courses_selected.connect(self._fetch_modules)
         self.module_selection_view.download_requested.connect(self._start_download)
         self.settings_view.membership_updated.connect(self.auth_view.refresh_membership_state)
+        self.course_selection_view.search_requested.connect(self._search_courses)
 
     def _start_version_check(self) -> None:
         """Starts an asynchronous check for the latest build on GitHub."""
@@ -127,7 +134,14 @@ class MainWindow(QMainWindow):
 
         QMessageBox.critical(self, "Erro na execução", f"Ocorreu um erro: {message}")
 
-    def _fetch_courses(self, platform_name: str, credentials: dict) -> None:
+    def _search_courses(self, query: str) -> None:
+        """Searches for courses on the platform."""
+        if self._platform and self._platform.credentials:
+             self._fetch_courses(self._platform_name, self._platform.credentials, query=query)
+        else:
+             QMessageBox.warning(self, "Erro", "Não foi possível pesquisar: Credenciais não encontradas.")
+
+    def _fetch_courses(self, platform_name: str, credentials: dict, query: str | None = None) -> None:
         """Starts a worker to fetch courses."""
         self._resume_state = None
         self._platform_name = platform_name
@@ -138,9 +152,9 @@ class MainWindow(QMainWindow):
             return
 
         self.auth_view.list_products_button.setEnabled(False)
-        self.auth_view.list_products_button.setText("Authenticando e buscando cursos...")
+        self.auth_view.list_products_button.setText("Authenticando e buscando cursos..." if not query else "Pesquisando...")
         
-        worker = FetchCoursesWorker(self._platform, credentials)
+        worker = FetchCoursesWorker(self._platform, credentials, query=query)
         worker.signals.result.connect(self._on_courses_fetched)
         worker.signals.error.connect(self._handle_worker_error)
         worker.signals.finished.connect(lambda: self.auth_view.list_products_button.setEnabled(True))

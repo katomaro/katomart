@@ -19,7 +19,7 @@ class VersionCheckWorker(QRunnable):
     def run(self) -> None:
         try:
             logging.info("Verificando versão mais recente no GitHub...")
-            response = requests.get(self.version_url, timeout=5)
+            response = requests.get(self.version_url, timeout=10)
             response.raise_for_status()
             data = response.json()
             build_value = data.get("build")

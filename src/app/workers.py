@@ -43,10 +43,11 @@ class FetchCoursesWorker(QRunnable):
     Worker to fetch, merge, and process the list of available courses.
     """
 
-    def __init__(self, platform: BasePlatform, credentials: dict):
+    def __init__(self, platform: BasePlatform, credentials: dict, query: str | None = None):
         super().__init__()
         self.platform = platform
         self.credentials = credentials
+        self.query = query
         self.signals = WorkerSignals()
 
     def run(self) -> None:
@@ -56,7 +57,12 @@ class FetchCoursesWorker(QRunnable):
         try:
             logging.info("Worker: Autenticando e obtendo cursos...")
             self.platform.authenticate(self.credentials)
-            courses = self.platform.fetch_courses()
+            
+            if self.query:
+                logging.info(f"Worker: Pesquisando cursos com query: '{self.query}'")
+                courses = self.platform.search_courses(self.query)
+            else:
+                courses = self.platform.fetch_courses()
 
             logging.info(f"Worker: Obtidos e processados {len(courses)} cursos.")
             courses_json = json.dumps(courses)
@@ -180,6 +186,7 @@ class DownloadWorker(QRunnable):
                                 result = func()
                                 if treat_false_as_failure and result is False:
                                     raise RuntimeError(f"{description} retornou status de falha após re-autenticação.")
+                                logging.info(f"Operação '{description}' recuperada com sucesso após re-autenticação.")
                                 return result
                             except Exception as auth_exc:
                                 logging.error(f"Falha na re-autenticação ou na tentativa final: {auth_exc}")

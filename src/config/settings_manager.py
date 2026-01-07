@@ -60,6 +60,8 @@ class AppSettings:
     permissions: list[str] = field(default_factory=list)
     has_full_permissions: bool = False
     membership_email: str = ""
+    membership_password: str = ""
+    save_membership_password: bool = False
     membership_token: str = ""
     allowed_platforms: list[str] = field(default_factory=list)
     is_premium_member: bool = False

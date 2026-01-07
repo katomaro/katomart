@@ -102,6 +102,20 @@ class BasePlatform(ABC):
         """Fetches the list of available courses."""
         pass
 
+    def search_courses(self, query: str) -> List[Dict[str, Any]]:
+        """
+        Searches for courses matching the query.
+        Default implementation fetches all courses and filters locally.
+        Subclasses should override this if the platform supports server-side search.
+        """
+        all_courses = self.fetch_courses()
+        query_lower = query.lower()
+        return [
+            c for c in all_courses 
+            if query_lower in c.get("name", "").lower() 
+            or query_lower in c.get("seller_name", "").lower()
+        ]
+
     @abstractmethod
     def fetch_course_content(self, courses: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Fetches the modules and lessons for the selected courses."""

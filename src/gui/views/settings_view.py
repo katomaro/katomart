@@ -71,6 +71,9 @@ class SettingsView(QWidget):
         self.membership_password_edit = QLineEdit()
         self.membership_password_edit.setEchoMode(QLineEdit.EchoMode.Password)
 
+        self.save_membership_password_check = QCheckBox("Salvar senha do assinante")
+        self.save_membership_password_check.toggled.connect(self._on_save_membership_password_toggled)
+
         self.membership_status_label = QLabel()
         self.membership_status_label.setStyleSheet("font-weight: 600;")
         self.membership_allowed_label = QLabel()
@@ -88,6 +91,7 @@ class SettingsView(QWidget):
 
         membership_layout.addRow("E-mail:", self.membership_email_edit)
         membership_layout.addRow("Senha:", self.membership_password_edit)
+        membership_layout.addRow("", self.save_membership_password_check)
         membership_layout.addRow(button_row)
         membership_layout.addRow("Status:", self.membership_status_label)
         membership_layout.addRow("Plataformas liberadas:", self.membership_allowed_label)
@@ -394,7 +398,12 @@ class SettingsView(QWidget):
         self.bento4_path_edit.setText(getattr(settings, "bento4_path", "./bento4/bin"))
 
         self.membership_email_edit.setText(settings.membership_email)
-        self.membership_password_edit.clear()
+        self.membership_password_edit.setText(settings.membership_password)
+        
+        self.save_membership_password_check.blockSignals(True)
+        self.save_membership_password_check.setChecked(settings.save_membership_password)
+        self.save_membership_password_check.blockSignals(False)
+
         self.membership_status_label.setText(
             "Assinante" if settings.is_premium_member else "Gratuito"
         )
@@ -499,6 +508,8 @@ class SettingsView(QWidget):
             max_lesson_name_length=self.lesson_name_max_spin.value(),
             max_file_name_length=self.file_name_max_spin.value(),
             membership_email=current_settings.membership_email,
+            membership_password=current_settings.membership_password,
+            save_membership_password=self.save_membership_password_check.isChecked(),
             membership_token=current_settings.membership_token,
             allowed_platforms=list(current_settings.allowed_platforms),
             is_premium_member=current_settings.is_premium_member,
@@ -536,6 +547,8 @@ class SettingsView(QWidget):
         updated_settings = replace(
             settings,
             membership_email=email,
+            membership_password=password if self.save_membership_password_check.isChecked() else "",
+            save_membership_password=self.save_membership_password_check.isChecked(),
             membership_token=membership_info.token,
             allowed_platforms=membership_info.allowed_platforms,
             is_premium_member=membership_info.is_premium,
@@ -544,7 +557,7 @@ class SettingsView(QWidget):
         )
         self._settings_manager.save_settings(updated_settings)
         self.load_settings()
-        self.membership_password_edit.clear()
+        # self.membership_password_edit.clear() # Cleared by load_settings logic if needed, but we keep if saved
         self.membership_updated.emit()
 
     def _clear_membership(self) -> None:
@@ -552,10 +565,13 @@ class SettingsView(QWidget):
         settings = self._settings_manager.get_settings()
         if not settings.membership_token and not settings.has_full_permissions:
             self.membership_password_edit.clear()
+            # Reset checkbox too? Keep user preference? Usually logout means clear everything.
+            self.save_membership_password_check.setChecked(False)
             return
 
         updated_settings = replace(
             settings,
+            membership_password="", # Clear password on logout
             membership_token="",
             allowed_platforms=[],
             is_premium_member=False,
@@ -564,7 +580,7 @@ class SettingsView(QWidget):
         )
         self._settings_manager.save_settings(updated_settings)
         self.load_settings()
-        self.membership_password_edit.clear()
+         # self.membership_password_edit.clear()
         self.membership_updated.emit()
 
     def _update_paid_settings_state(self, settings: AppSettings) -> None:
@@ -604,3 +620,14 @@ class SettingsView(QWidget):
             self.whisper_output_format_combo,
         ):
             widget.setEnabled(bool(enabled))
+
+    def _on_save_membership_password_toggled(self, checked: bool) -> None:
+        """Warns the user about the risks of saving the password."""
+        if checked and self.isVisible():
+            QMessageBox.warning(
+                self,
+                "Aviso de Segurança",
+                "Salvar senha não é seguro pois aplicativos terceiros (ex: scripts para backup de terceiros) "
+                "podem procurar o arquivo do katomart (e também carteiras de criptomoedas) e os roubar."
+            )
+

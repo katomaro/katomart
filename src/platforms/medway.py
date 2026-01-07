@@ -30,7 +30,7 @@ class MedwayPlatform(BasePlatform):
     @classmethod
     def auth_instructions(cls) -> str:
         return """
-Assinantes (R$ 5.00) ativos podem informar usuário/senha. O sistema irá trocar essas credenciais automaticamente pelo token da etapa acima, além de usar alguns algoritmos melhores e ter funcionalidades extras na aplicação, e obter suporte prioritário.
+Assinantes (R$ 9.90) ativos podem informar usuário/senha. O sistema irá trocar essas credenciais automaticamente pelo token da etapa acima, além de usar alguns algoritmos melhores e ter funcionalidades extras na aplicação, e obter suporte prioritário.
 
 Para usuários Gratuitos: Como obter o token de acesso da Medway?:
 1) Acesse https://app.medway.com.br e faça login normalmente.

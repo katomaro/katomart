@@ -1,18 +1,39 @@
 from PySide6.QtCore import Signal, Qt
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QListWidget, QPushButton, QLabel, QListWidgetItem
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QListWidget, QPushButton, QLabel, QListWidgetItem, QHBoxLayout, QLineEdit, QCheckBox
 from typing import List, Dict, Any
 
 class CourseSelectionView(QWidget):
     """Second screen: allows user to select courses."""
     courses_selected = Signal(list)
+    search_requested = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         layout = QVBoxLayout(self)
+
+        search_layout = QHBoxLayout()
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Pesquisar curso...")
+        self.search_input.returnPressed.connect(self._perform_search)
+        
+        self.search_button = QPushButton("Pesquisar")
+        self.search_button.clicked.connect(self._perform_search)
+        
+        self.platform_search_checkbox = QCheckBox("Listar conteudo novamente da plataforma para localizar o item (evite)")
+        self.platform_search_checkbox.setToolTip("Se marcado, a pesquisa será feita diretamente na plataforma.")
+
+        search_layout.addWidget(QLabel("Pesquisar:"))
+        search_layout.addWidget(self.search_input)
+        search_layout.addWidget(self.search_button)
+        search_layout.addWidget(self.platform_search_checkbox)
+        layout.addLayout(search_layout)
+        
         layout.addWidget(QLabel("Selecione os cursos para download:"))
 
         self.course_list = QListWidget()
         self.course_list.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
+        
+        self._all_courses: List[Dict[str, Any]] = []
 
         self.next_button = QPushButton("Selecionar Módulos/Aulas")
         self.next_button.clicked.connect(self._on_next)
@@ -22,12 +43,28 @@ class CourseSelectionView(QWidget):
 
     def update_courses(self, courses: List[Dict[str, Any]]) -> None:
         """Clears and repopulates the course list widget."""
+        self._all_courses = courses
+        self._filter_items(self.search_input.text())
+
+    def _perform_search(self) -> None:
+        """Executes the search or filter logic."""
+        text = self.search_input.text().strip()
+        if self.platform_search_checkbox.isChecked():
+            self.search_requested.emit(text)
+        else:
+            self._filter_items(text)
+
+    def _filter_items(self, text: str) -> None:
+        """Filters the course list based on the search text locally."""
         self.course_list.clear()
-        for course in courses:
+        search_text = text.lower()
+        
+        for course in self._all_courses:
             item_name = course.get("name", "Unnamed Course") + " - " + course.get("seller_name", "Unknown Seller")
-            item = QListWidgetItem(item_name)
-            item.setData(Qt.ItemDataRole.UserRole, course)
-            self.course_list.addItem(item)
+            if search_text in item_name.lower():
+                item = QListWidgetItem(item_name)
+                item.setData(Qt.ItemDataRole.UserRole, course)
+                self.course_list.addItem(item)
 
     def _on_next(self) -> None:
         """Emits the data of the selected courses."""

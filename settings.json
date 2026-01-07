@@ -48,6 +48,8 @@
     "max_lesson_name_length": 60,
     "max_file_name_length": 30,
     "membership_email": "",
+    "membership_password": "",
+    "save_membership_password": true,
     "create_resume_summary": false,
     "delete_folder_on_error": false,
     "allowed_attachment_extensions": [],

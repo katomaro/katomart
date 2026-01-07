@@ -136,6 +136,10 @@ Para autenticação manual (Token Direto, não recomendado, use credenciais se p
             "FrontVersion": "1458"
         })
 
+        if self.cookies:
+            for cookie in self.cookies:
+                self._session.cookies.set(cookie['name'], cookie['value'])
+
     def refresh_auth(self) -> None:
         """
         Refreshes the authentication session using the refresh token flow.
@@ -215,6 +219,10 @@ Para autenticação manual (Token Direto, não recomendado, use credenciais se p
                         break
                 if not updated_token_cookie:
                     self.cookies.append({'name': 'newAuthToken', 'value': new_token})
+
+                if self._session and self.cookies:
+                    for c in self.cookies:
+                        self._session.cookies.set(c['name'], c['value'])
 
                 return True
                 
