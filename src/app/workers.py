@@ -623,7 +623,7 @@ class DownloadWorker(QRunnable):
                                                 downloader = DownloaderFactory.get_downloader(emb_url, self.settings_manager)
                                                 try:
                                                     extra_props = {}
-                                                    if self.platform_name == "hotmart" and course_slug:
+                                                    if self.platform_name.lower() == "hotmart" and course_slug:
                                                         extra_props["referer"] = f"https://{course_slug}.club.hotmart.com/"
 
                                                     self._run_with_retries(
