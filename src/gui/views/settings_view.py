@@ -1,6 +1,7 @@
 from dataclasses import replace
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Signal, QUrl
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -85,8 +86,13 @@ class SettingsView(QWidget):
         self.membership_login_button.clicked.connect(self._authenticate_membership)
         self.membership_logout_button = QPushButton("Sair")
         self.membership_logout_button.clicked.connect(self._clear_membership)
+
+        self.visit_site_button = QPushButton("Ver Assinatura (Abre o navegador padrão)")
+        self.visit_site_button.clicked.connect(self._open_membership_site)
+
         button_row.addWidget(self.membership_login_button)
         button_row.addWidget(self.membership_logout_button)
+        button_row.addWidget(self.visit_site_button)
         button_row.addStretch()
 
         membership_layout.addRow("E-mail:", self.membership_email_edit)
@@ -525,6 +531,10 @@ class SettingsView(QWidget):
             has_full_permissions=current_settings.has_full_permissions,
         )
         self._settings_manager.save_settings(updated_settings)
+
+    def _open_membership_site(self) -> None:
+        """Opens the membership site in the default browser."""
+        QDesktopServices.openUrl(QUrl("https://katomaro.com/store/katomart"))
 
     def _authenticate_membership(self) -> None:
         """Authenticates the app user and stores the returned entitlements."""

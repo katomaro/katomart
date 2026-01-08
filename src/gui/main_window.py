@@ -1,6 +1,5 @@
 import json
 import logging
-import webbrowser
 from pathlib import Path
 from typing import Any
 from PySide6.QtCore import QThreadPool, QTimer
@@ -71,7 +70,6 @@ class MainWindow(QMainWindow):
             "Com uma assinatura mensal de apenas R$9.90, você pode ajudar a manter o Katomart! ativo e em constante melhoria, além de desbloquear downloads mais rápido e funções extras poderosas.\n\n"
             "Visite https://katomaro.com/store/katomart e conhe\u00e7a os benefícios. Uma janela no seu navegador foi aberta para você verificar."
         )
-        webbrowser.open("https://katomaro.com/store/katomart")
         QMessageBox.information(self, "Suporte o Katomart!", message)
 
     def _connect_signals(self) -> None:
