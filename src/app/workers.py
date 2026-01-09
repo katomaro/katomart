@@ -401,6 +401,10 @@ class DownloadWorker(QRunnable):
 
         model = self._load_whisper_model()
         language = None if self.settings.whisper_language == "auto" else self.settings.whisper_language
+
+        if language and len(language) > 2 and "-" in language:
+            language = language.split("-")[0].lower()
+
         result = model.transcribe(str(audio_path), language=language)
 
         output_format = self.settings.whisper_output_format or "srt"
@@ -607,7 +611,7 @@ class DownloadWorker(QRunnable):
                                                 emb_name = f"{emb_idx}. e_Aula"
                                                 emb_name = truncate_filename_preserve_ext(emb_name, getattr(self.settings, 'max_file_name_length', 30))
                                                 emb_path = lesson_path / emb_name
-                                                logging.info(f"Baixando vídeo linkado '{emb_url}' para '{emb_path}'")
+                                                logging.info(f"Baixando Conteudo linkado '{emb_url}' para '{emb_path}'")
                                                 try:
                                                     parsed_emb = urlparse(emb_url)
                                                     emb_domain = (parsed_emb.netloc or "").lower()
@@ -637,13 +641,13 @@ class DownloadWorker(QRunnable):
                                                         lambda: downloader.download_video(
                                                             emb_url, self.platform.get_session(), emb_path, extra_props=extra_props
                                                         ),
-                                                        description=f"Download do vídeo linkado '{emb_name}'",
+                                                        description=f"Download do Conteudo linkado '{emb_name}'",
                                                     )
-                                                    self.signals.result.emit(f"    - Vídeo linkado baixado: {emb_name}")
+                                                    self.signals.result.emit(f"    - Conteudo linkado baixado: {emb_name}")
                                                     self._maybe_transcribe_video(emb_path)
                                                 except Exception as e:
                                                     logging.error(
-                                                        f"Erro ao baixar vídeo linkado {emb_url}: {e}",
+                                                        f"Erro ao baixar Conteudo linkado {emb_url}: {e}",
                                                         exc_info=True,
                                                     )
                                                     self.signals.result.emit(
