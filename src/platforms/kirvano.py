@@ -266,6 +266,7 @@ Para usuários gratuitos: Como obter o token da Kirvano?:
                             "description": less.get("description"),
                             "course_uuid": course_uuid,
                             "module_uuid": mod_uuid,
+                            "student_uuid": less.get("studentUuid") or less.get("enrollmentUuid"), # Tentativa de captura antecipada
                         })
 
                     processed_modules.append({
@@ -327,6 +328,63 @@ Para usuários gratuitos: Como obter o token da Kirvano?:
                 break
             page += 1
         return lessons
+
+    def mark_lesson_watched(self, lesson: Dict[str, Any], watched: bool) -> None:
+        """
+        Marks a lesson as watched or unwatched.
+        """
+        if not self._session:
+            raise ConnectionError("Sessão não autenticada.")
+
+        lesson_id = lesson.get("id")
+        course_uuid = lesson.get("course_uuid")
+        
+        # Tentativa de recuperar student_uuid que pode ter vindo na lista de aulas
+        student_uuid = lesson.get("student_uuid")
+
+        if not student_uuid:
+            # Fallback: Tentar descobrir o student_uuid consultando a API, se possível
+            # URL hipotética baseada no padrão REST da Kirvano: /courses/{course}/current-student
+            # Mas como não temos certeza, vamos tentar pegar do token, ou de um endpoint de "me"
+            
+            # Decodificando token apenas para pegar o 'sub', caso seja o student_id (testamos e não era, mas...)
+            # O melhor aqui é tentar obter via um endpoint de "quem sou eu no curso"
+            # Vamos tentar listar 'viewers' ou 'students/me'.
+            try:
+                # Tentativa 1: Endpoint viewer/student do curso
+                url = f"{MEMBERS_API_BASE}/courses/{course_uuid}/students/me"
+                resp = self._session.get(url)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    student_uuid = data.get("uuid") or data.get("id")
+            except Exception:
+                pass
+
+        if not student_uuid:
+            # Se ainda não temos, tentamos uma abordagem de "adivinhação" ou logamos erro
+            # O HAR mostrava um ID diferente do SUB do token.
+            # Vamos tentar usar o SUB do token como fallback, talvez funcione em alguns casos?
+            # Ou logar erro.
+            logger.warning("Não foi possível identificar o ID do aluno (student_uuid) para marcar aula na Kirvano.")
+            return
+
+        url = f"{MEMBERS_API_BASE}/courses/{course_uuid}/students/{student_uuid}/{lesson_id}"
+        
+        payload = {"isWatched": watched}
+        
+        # Headers específicos vistos no HAR
+        headers = {
+            "Content-Type": "application/json",
+            "Origin": "https://app.kirvano.com",
+            "Referer": "https://app.kirvano.com/",
+        }
+        
+        response = self._session.patch(url, json=payload, headers=headers)
+        if response.status_code not in (200, 202, 204):
+            logger.error(f"Erro ao atualizar status da aula {lesson_id}: {response.status_code} - {response.text}")
+            response.raise_for_status()
+        
+        logger.info(f"Aula {lesson_id} marcada como {'assistida' if watched else 'não assistida'} com sucesso.")
 
     def fetch_lesson_details(self, lesson: Dict[str, Any], course_slug: str, course_id: str, module_id: str) -> LessonContent:
         """

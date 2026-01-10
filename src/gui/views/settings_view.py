@@ -314,6 +314,11 @@ class SettingsView(QWidget):
         for name, code in self.whisper_output_formats.items():
             self.whisper_output_format_combo.addItem(name, userData=code)
 
+        self.lesson_watch_status_combo = QComboBox()
+        self.lesson_watch_status_combo.addItem("NÃO ALTERAR ESTADO", "none")
+        self.lesson_watch_status_combo.addItem("Marcar como ASSISTIDO", "watched")
+        self.lesson_watch_status_combo.addItem("MARCAR COMO NÃO ASSISTIDO", "unwatched")
+
         self.lesson_access_delay_spin = QSpinBox()
         self.lesson_access_delay_spin.setRange(-1, 3600)
         self.lesson_access_delay_spin.setSpecialValueText("Duração do Vídeo")
@@ -339,6 +344,7 @@ class SettingsView(QWidget):
         self._paid_form_layout.addRow("Delay para Retentativas (s):", self.retry_delay_spin)
         self._paid_form_layout.addRow(self.auto_reauth_check)
         self._paid_form_layout.addRow("Delay entre aulas (s):", self.lesson_access_delay_spin)
+        self._paid_form_layout.addRow("Comportamento ao processar aula:", self.lesson_watch_status_combo)
         self._paid_form_layout.addRow(self.create_resume_summary_check)
         self._paid_form_layout.addRow(self.download_widevine_check)
         self._paid_form_layout.addRow("Caminho da CDM:", self.cdm_path_edit)
@@ -423,6 +429,11 @@ class SettingsView(QWidget):
         self.max_concurrent_downloads_spin.setValue(settings.max_concurrent_segment_downloads)
         self.retry_attempts_spin.setValue(settings.download_retry_attempts)
         self.lesson_access_delay_spin.setValue(getattr(settings, "lesson_access_delay", 0))
+        
+        index = self.lesson_watch_status_combo.findData(getattr(settings, "lesson_watch_status_behavior", "none"))
+        if index != -1:
+            self.lesson_watch_status_combo.setCurrentIndex(index)
+
         self.retry_delay_spin.setValue(settings.download_retry_delay_seconds)
         self.auto_reauth_check.setChecked(getattr(settings, "auto_reauth_on_error", False))
         self.create_resume_summary_check.setChecked(
@@ -529,6 +540,7 @@ class SettingsView(QWidget):
             ],
             permissions=list(current_settings.permissions),
             has_full_permissions=current_settings.has_full_permissions,
+            lesson_watch_status_behavior=self.lesson_watch_status_combo.currentData(),
         )
         self._settings_manager.save_settings(updated_settings)
 

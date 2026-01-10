@@ -774,6 +774,25 @@ class DownloadWorker(QRunnable):
                                         )
                                         raise
                                 self.signals.result.emit(f"      - URL auxiliar salva em {aux_path}")
+                            
+                            watch_behavior = getattr(self.settings, "lesson_watch_status_behavior", "none")
+                            mark_as_watched_bool = None
+                            if watch_behavior == "watched":
+                                mark_as_watched_bool = True
+                            elif watch_behavior == "unwatched":
+                                mark_as_watched_bool = False
+
+                            if mark_as_watched_bool is not None:
+                                self.signals.result.emit(f"      - Atualizando status para {'ASSISTIDO' if mark_as_watched_bool else 'NÃO ASSISTIDO'}...")
+                                try:
+                                    self._run_with_retries(
+                                        lambda: self.platform.mark_lesson_watched(lesson, mark_as_watched_bool),
+                                        description="Atualizar status da aula",
+                                        treat_false_as_failure=False
+                                    )
+                                except Exception as status_exc:
+                                     logging.error(f"Falha ao atualizar status da aula {lesson.get('title')}: {status_exc}")
+                                     self.signals.result.emit(f"      - [AVISO] Falha ao atualizar status: {status_exc}")
 
                         except Exception as e:
                             logging.error(f"Failed to fetch details for lesson '{lesson_title}': {e}")

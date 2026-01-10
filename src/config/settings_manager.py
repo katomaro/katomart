@@ -71,6 +71,7 @@ class AppSettings:
     ffmpeg_path: str = "./ffmpeg/bin"
     bento4_path: str = "./bento4/bin"
     lesson_access_delay: int = 0
+    lesson_watch_status_behavior: str = "none"
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "AppSettings":

@@ -60,8 +60,11 @@ class CourseSelectionView(QWidget):
         search_text = text.lower()
         
         for course in self._all_courses:
-            item_name = course.get("name", "Unnamed Course") + " - " + course.get("seller_name", "Unknown Seller")
-            if search_text in item_name.lower():
+            # Tenta pegar 'title' ou 'name' para exibir o nome
+            course_title = course.get("title") or course.get("name") or "Unnamed Course"
+            item_name = f"{course_title} - {course.get('seller_name', 'Unknown Seller')}"
+            
+            if not search_text or search_text in item_name.lower():
                 item = QListWidgetItem(item_name)
                 item.setData(Qt.ItemDataRole.UserRole, course)
                 self.course_list.addItem(item)

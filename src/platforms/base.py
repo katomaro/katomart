@@ -131,6 +131,15 @@ class BasePlatform(ABC):
         """Downloads an attachment using platform-specific logic."""
         pass
 
+    def mark_lesson_watched(self, lesson: Dict[str, Any], watched: bool) -> None:
+        """
+        Marks a lesson as watched or unwatched on the platform.
+        This provides a default implementation that logs a warning.
+        Subclasses should override this to provide actual functionality.
+        """
+        import logging
+        logging.warning(f"Feature 'mark_lesson_watched' is not implemented for this platform. Lesson: {lesson.get('id')}, Watched: {watched}")
+
     @classmethod
     def token_field(cls) -> AuthField:
         """Returns the default optional token field."""

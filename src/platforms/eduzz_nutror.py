@@ -269,7 +269,7 @@ Para autenticação manual (Token Direto, não recomendado, use credenciais se p
                             # Ex: "2022-01-27T11:08:29.000Z"
                             expire_dt = datetime.fromisoformat(expire_at.replace("Z", "+00:00"))
                             if expire_dt < datetime.now(expire_dt.tzinfo):
-                                logger.info(f"Pulnado curso expirado: {title} (Expirou em {expire_at})")
+                                logger.info(f"Pulando curso expirado: {title} (Expirou em {expire_at})")
                                 continue
                         except Exception as e:
                             logger.warning(f"Erro ao verificar expiração do curso {title}: {e}")

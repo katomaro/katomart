@@ -35,3 +35,5 @@ build/
 dist/
 *.spec
 build.py
+
+credentials.json

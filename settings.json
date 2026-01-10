@@ -2,7 +2,7 @@
     "download_path": "./downloads",
     "video_quality": "Mais alta",
     "max_concurrent_segment_downloads": 1,
-    "timeout_seconds": 30,
+    "timeout_seconds": 60,
     "download_subtitles": true,
     "download_podcasts": true,
     "subtitle_language": "en",
@@ -37,7 +37,9 @@
         "t.me",
         "telegram.me",
         "telegram.org",
-        "discord.gg"
+        "discord.gg",
+        "github.com",
+        "rocketseat.com.br"
     ],
     "use_whisper_transcription": false,
     "whisper_model": "base",
@@ -55,5 +57,6 @@
     "allowed_attachment_extensions": [],
     "ffmpeg_path": "./ffmpeg/bin",
     "bento4_path": "./bento4/bin",
-    "lesson_access_delay": 0
+    "lesson_access_delay": 0,
+    "lesson_watch_status_behavior": "none"
 }

@@ -53,6 +53,7 @@ class YtdlpDownloader(BaseDownloader):
             'quiet': True,
             'no_warnings': True,
             'progress': True,
+            'socket_timeout': self.settings.timeout_seconds,
             **retry_opts,
         }
 
