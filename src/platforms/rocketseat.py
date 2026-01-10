@@ -83,8 +83,8 @@ class RocketSeatPlatform(BasePlatform):
     @classmethod
     def auth_instructions(cls) -> str:
         return (
-            "O sistema abrirá um navegador invisível para realizar o login na Rocketseat. "
-            "Certifique-se de que suas credenciais estão corretas."
+            "Infelizmente a RocketSeat não suporta apenas Token JWT. Sendo assim, é necessário a assinatura."
+            "Use suas credenciais. Um sistema será elaborado no futuro para permitir a inserção de cookies manualmente."
         )
 
     def authenticate(self, credentials: Dict[str, Any]) -> None:
