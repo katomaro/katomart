@@ -523,7 +523,9 @@ class HotmartDownloader(BaseDownloader):
                     'preferredquality': '192',
                 }]
             else:
-                pass
+                target_height = video_asset.get('height')
+                if target_height:
+                    ydl_opts['format'] = f"bestvideo[height<={target_height}]+bestaudio/best[height<={target_height}]"
 
             if self.settings.download_subtitles:
                 ydl_opts['writesubtitles'] = True
