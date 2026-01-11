@@ -57,7 +57,7 @@ class MembershipService:
         user_info = data.get("user") or {}
         user_email = str(user_info.get("email") or "").strip()
 
-        has_full_permission = "katomart.FULL" in permissions
+        has_full_permission = "katomart.FULL" in permissions or "katomart.downloader" in permissions
         allowed = PlatformFactory.get_platform_names() if has_full_permission else []
 
         token = str(data.get("token") or "").strip()
