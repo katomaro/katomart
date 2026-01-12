@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QScrollArea,
     QTextEdit,
+    QSizePolicy,
 )
 
 from src.app.membership_service import MembershipService
@@ -68,14 +69,23 @@ class SettingsView(QWidget):
     def _setup_ui(self) -> tuple[QGroupBox, QGroupBox, QGroupBox]:
         """Creates and arranges the UI widgets for settings."""
         self._form_layout = QFormLayout()
+        self._form_layout.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+
         self._paid_form_layout = QFormLayout()
+        self._paid_form_layout.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
 
         self._membership_group = QGroupBox("Autenticação do Software")
         membership_layout = QFormLayout()
+        membership_layout.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
 
         self.membership_email_edit = QLineEdit()
+        self.membership_email_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.membership_email_edit.setMaximumWidth(600)
+
         self.membership_password_edit = QLineEdit()
         self.membership_password_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.membership_password_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.membership_password_edit.setMaximumWidth(600)
 
         self.save_membership_password_check = QCheckBox("Salvar senha do assinante")
         self.save_membership_password_check.toggled.connect(self._on_save_membership_password_toggled)
@@ -108,25 +118,40 @@ class SettingsView(QWidget):
         self._membership_group.setLayout(membership_layout)
 
         self.download_path_edit = QLineEdit()
+        self.download_path_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.download_path_edit.setMaximumWidth(600)
 
         self.video_quality_combo = QComboBox()
         self.video_qualities = ["Mais alta", "1080p", "720p", "480p", "Mais baixa"]
         self.video_quality_combo.addItems(self.video_qualities)
+        self.video_quality_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.video_quality_combo.setMaximumWidth(600)
 
         self.course_name_max_spin = QSpinBox()
         self.course_name_max_spin.setRange(10, 200)
+        self.course_name_max_spin.setMinimumWidth(64)
+
         self.module_name_max_spin = QSpinBox()
         self.module_name_max_spin.setRange(10, 300)
+        self.module_name_max_spin.setMinimumWidth(64)
+
         self.lesson_name_max_spin = QSpinBox()
         self.lesson_name_max_spin.setRange(10, 300)
+        self.lesson_name_max_spin.setMinimumWidth(64)
+
         self.file_name_max_spin = QSpinBox()
         self.file_name_max_spin.setRange(5, 200)
+        self.file_name_max_spin.setMinimumWidth(64)
+
         self.timeout_spin = QSpinBox()
         self.timeout_spin.setRange(10, 300)
+        self.timeout_spin.setMinimumWidth(64)
         self.download_subtitles_check = QCheckBox("Baixar Legendas")
         self.download_podcasts_check = QCheckBox("Baixar Podcasts (Aulas apenas áudio)")
 
         self.subtitle_lang_combo = QComboBox()
+        self.subtitle_lang_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.subtitle_lang_combo.setMaximumWidth(600)
         self.subtitle_languages = {
             "Português": "pt",
             "Português (Brasil)": "pt-BR",
@@ -169,6 +194,8 @@ class SettingsView(QWidget):
         self.download_embedded_check = QCheckBox("Baixar Vídeos na Descrição (recomendado)")
 
         self.audio_lang_combo = QComboBox()
+        self.audio_lang_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.audio_lang_combo.setMaximumWidth(600)
         self.audio_languages = {
             "Português": "pt",
             "Português (Brasil)": "pt-BR",
@@ -214,7 +241,12 @@ class SettingsView(QWidget):
         self.allowed_extensions_edit.setMaximumHeight(100)
 
         self.ffmpeg_path_edit = QLineEdit()
+        self.ffmpeg_path_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.ffmpeg_path_edit.setMaximumWidth(600)
+
         self.bento4_path_edit = QLineEdit()
+        self.bento4_path_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.bento4_path_edit.setMaximumWidth(600)
 
         self._form_layout.addRow("Caminho para Download:", self.download_path_edit)
         self._form_layout.addRow("Qualidade do Vídeo:", self.video_quality_combo)
@@ -241,35 +273,54 @@ class SettingsView(QWidget):
         self.paid_status_label.setStyleSheet("color: #a94442; font-size: 12px;")
 
         self.user_agent_edit = QLineEdit()
+        self.user_agent_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.user_agent_edit.setMaximumWidth(600)
 
         self.max_concurrent_downloads_spin = QSpinBox()
         self.max_concurrent_downloads_spin.setRange(1, 16)
+        self.max_concurrent_downloads_spin.setMinimumWidth(64)
 
         self.retry_attempts_spin = QSpinBox()
         self.retry_attempts_spin.setRange(0, 10)
+        self.retry_attempts_spin.setMinimumWidth(64)
 
         self.retry_delay_spin = QSpinBox()
         self.retry_delay_spin.setRange(0, 600)
+        self.retry_delay_spin.setMinimumWidth(64)
         self.auto_reauth_check = QCheckBox("Tentar re-autenticação automática em caso de erro 400/401")
         self.create_resume_summary_check = QCheckBox("Criar JSON de Resumo")
 
         self.download_widevine_check = QCheckBox("Baixar Widevine")
 
         self.cdm_path_edit = QLineEdit()
+        self.cdm_path_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.cdm_path_edit.setMaximumWidth(600)
 
         self.use_http_proxy_check = QCheckBox("Usar Proxy HTTP")
 
         self.proxy_address_edit = QLineEdit()
+        self.proxy_address_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.proxy_address_edit.setMaximumWidth(600)
+
         self.proxy_username_edit = QLineEdit()
+        self.proxy_username_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.proxy_username_edit.setMaximumWidth(600)
+
         self.proxy_password_edit = QLineEdit()
         self.proxy_password_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.proxy_password_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.proxy_password_edit.setMaximumWidth(600)
+
         self.proxy_port_spin = QSpinBox()
         self.proxy_port_spin.setRange(0, 65535)
+        self.proxy_port_spin.setMinimumWidth(64)
 
         self.use_whisper_transcription_check = QCheckBox(
             "Usar Whisper para transcrever os vídeos baixados (requer ffmpeg)"
         )
         self.whisper_model_combo = QComboBox()
+        self.whisper_model_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.whisper_model_combo.setMaximumWidth(600)
         self.whisper_models = [
             "tiny",
             "base",
@@ -282,6 +333,8 @@ class SettingsView(QWidget):
         self.whisper_model_combo.addItems(self.whisper_models)
 
         self.whisper_language_combo = QComboBox()
+        self.whisper_language_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.whisper_language_combo.setMaximumWidth(600)
         self.whisper_languages = {
             "Detectar automaticamente": "auto",
             "English": "en",
@@ -308,6 +361,8 @@ class SettingsView(QWidget):
             self.whisper_language_combo.addItem(name, userData=code)
 
         self.whisper_output_format_combo = QComboBox()
+        self.whisper_output_format_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.whisper_output_format_combo.setMaximumWidth(600)
         self.whisper_output_formats = {
             "Texto (.txt)": "txt",
             "Subrip (.srt)": "srt",
@@ -318,12 +373,15 @@ class SettingsView(QWidget):
             self.whisper_output_format_combo.addItem(name, userData=code)
 
         self.lesson_watch_status_combo = QComboBox()
+        self.lesson_watch_status_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.lesson_watch_status_combo.setMaximumWidth(600)
         self.lesson_watch_status_combo.addItem("NÃO ALTERAR ESTADO", "none")
         self.lesson_watch_status_combo.addItem("Marcar como ASSISTIDO", "watched")
         self.lesson_watch_status_combo.addItem("MARCAR COMO NÃO ASSISTIDO", "unwatched")
 
         self.lesson_access_delay_spin = QSpinBox()
         self.lesson_access_delay_spin.setRange(-1, 3600)
+        self.lesson_access_delay_spin.setMinimumWidth(64)
         self.lesson_access_delay_spin.setSpecialValueText("Duração do Vídeo")
         self.lesson_access_delay_spin.setToolTip(
             "Tempo de espera entre downloads de aulas (em segundos).\n"
