@@ -153,6 +153,13 @@ Para usuários gratuitos: Como obter o token da Kirvano?:
             "Accept": "application/json, text/plain, */*",
             "Origin": "https://app.kirvano.com",
             "Referer": "https://app.kirvano.com/",
+            "sec-ch-ua": '"Google Chrome";v="143", "Chromium";v="143", "Not A(Brand";v="24"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
+            "sec-fetch-dest": "empty",
+            "sec-fetch-mode": "cors",
+            "sec-fetch-site": "same-site",
+            "priority": "u=1, i",
         })
 
     def fetch_courses(self) -> List[Dict[str, Any]]:
