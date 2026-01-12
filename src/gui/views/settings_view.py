@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 
 from src.app.membership_service import MembershipService
 from src.config.settings_manager import AppSettings, SettingsManager
+from src.gui.widgets import PlatformTagsWidget
 from urllib.parse import urlparse
 
 
@@ -77,9 +78,7 @@ class SettingsView(QWidget):
 
         self.membership_status_label = QLabel()
         self.membership_status_label.setStyleSheet("font-weight: 600;")
-        self.membership_allowed_label = QLabel()
-        self.membership_allowed_label.setWordWrap(True)
-        self.membership_allowed_label.setStyleSheet("color: #555555; font-size: 12px;")
+        self.membership_allowed_widget = PlatformTagsWidget()
 
         button_row = QHBoxLayout()
         self.membership_login_button = QPushButton("Entrar")
@@ -100,7 +99,7 @@ class SettingsView(QWidget):
         membership_layout.addRow("", self.save_membership_password_check)
         membership_layout.addRow(button_row)
         membership_layout.addRow("Status:", self.membership_status_label)
-        membership_layout.addRow("Plataformas liberadas:", self.membership_allowed_label)
+        membership_layout.addRow("Plataformas liberadas:", self.membership_allowed_widget)
 
         self._membership_group.setLayout(membership_layout)
 
@@ -423,8 +422,7 @@ class SettingsView(QWidget):
         self.membership_status_label.setText(
             "Assinante" if settings.is_premium_member else "Gratuito"
         )
-        allowed_text = ", ".join(settings.allowed_platforms) if settings.allowed_platforms else "Nenhuma"
-        self.membership_allowed_label.setText(allowed_text)
+        self.membership_allowed_widget.set_platforms(settings.allowed_platforms)
         self.membership_logout_button.setEnabled(
             bool(settings.membership_token) or settings.has_full_permissions
         )
