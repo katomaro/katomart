@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QCheckBox,
     QMessageBox,
+    QSizePolicy,
 )
 
 from src.config.settings_manager import SettingsManager
@@ -48,23 +49,35 @@ class AuthView(QWidget):
         self._active_dialogs: list[QMessageBox] = []
 
         layout = QVBoxLayout(self)
+        layout.setSpacing(10)
 
         self.platform_combo = QComboBox()
+        self.platform_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.platform_combo.setMaximumWidth(600)
 
+        # Use a single form layout for both platform selector and credentials
         self.form_layout = QFormLayout()
+        self.form_layout.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        self.form_layout.setVerticalSpacing(6)
+        self.form_layout.setContentsMargins(0, 0, 0, 0)
         self.form_layout.addRow(QLabel("Plataforma:"), self.platform_combo)
 
-        self.credentials_layout = QFormLayout()
+        # Store the row index where credentials start
+        self._credentials_start_row = 1
 
         layout.addLayout(self.form_layout)
-        layout.addLayout(self.credentials_layout)
+
+        # Add spacing before checkboxes
+        layout.addSpacing(10)
 
         self.save_email_checkbox = QCheckBox("Salvar email")
-        layout.addWidget(self.save_email_checkbox)
+        layout.addWidget(self.save_email_checkbox, alignment=Qt.AlignmentFlag.AlignLeft)
 
         self.save_password_checkbox = QCheckBox("Salvar senha")
         self.save_password_checkbox.toggled.connect(self._on_save_password_toggled)
-        layout.addWidget(self.save_password_checkbox)
+        layout.addWidget(self.save_password_checkbox, alignment=Qt.AlignmentFlag.AlignLeft)
+
+        layout.addSpacing(10)
 
         self.clear_credentials_button = QPushButton("Limpar dados salvos")
         self.clear_credentials_button.clicked.connect(self._on_clear_credentials)
@@ -76,6 +89,9 @@ class AuthView(QWidget):
         self.platform_notice_label.hide()
         layout.addWidget(self.platform_notice_label)
 
+        # Add spacing before instructions
+        layout.addSpacing(15)
+
         self.instructions_title = QLabel("Instruções:")
         self.instructions_title.setStyleSheet("font-weight: 600;")
         self.instructions_label = QLabel()
@@ -84,6 +100,9 @@ class AuthView(QWidget):
 
         layout.addWidget(self.instructions_title)
         layout.addWidget(self.instructions_label)
+
+        # Add stretch to push button to bottom
+        layout.addStretch()
 
         self.list_products_button = QPushButton("Listar Produtos da Conta")
         self.list_products_button.clicked.connect(self._on_list_products)
@@ -266,8 +285,9 @@ class AuthView(QWidget):
 
     def _clear_auth_fields(self) -> None:
         """Removes the previous authentication input widgets."""
-        while self.credentials_layout.rowCount():
-            self.credentials_layout.removeRow(0)
+        # Remove all rows after the platform selector row
+        while self.form_layout.rowCount() > self._credentials_start_row:
+            self.form_layout.removeRow(self._credentials_start_row)
         self._auth_inputs.clear()
 
     def reset_auth_inputs(self) -> None:
@@ -280,7 +300,7 @@ class AuthView(QWidget):
         if not fields:
             no_credentials_label = QLabel("Esta plataforma não requer credenciais adicionais.")
             no_credentials_label.setStyleSheet("color: #666666;")
-            self.credentials_layout.addRow(no_credentials_label)
+            self.form_layout.addRow(no_credentials_label)
             return
 
         for field in fields:
@@ -289,7 +309,7 @@ class AuthView(QWidget):
                 label_text = f"{label_text} (opcional)"
             label = QLabel(label_text)
             input_widget, accessor, setter, reset = self._create_input_widget(field)
-            self.credentials_layout.addRow(label, input_widget)
+            self.form_layout.addRow(label, input_widget)
             self._auth_inputs[field.name] = AuthInputHandlers(accessor, setter, reset)
 
     def _create_input_widget(self, field: AuthField) -> tuple[QWidget, ValueAccessor, ValueSetter, Callable[[], None]]:
@@ -300,6 +320,8 @@ class AuthView(QWidget):
             line_edit = QLineEdit()
             line_edit.setEchoMode(QLineEdit.EchoMode.Password)
             line_edit.setPlaceholderText(field.placeholder)
+            line_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            line_edit.setMaximumWidth(600)
             widget: QWidget = line_edit
             accessor = lambda line=line_edit: line.text().strip()
             setter = lambda val, line=line_edit: line.setText(str(val))
@@ -308,6 +330,8 @@ class AuthView(QWidget):
             text_edit = QTextEdit()
             text_edit.setPlaceholderText(field.placeholder)
             text_edit.setFixedHeight(max(80, text_edit.fontMetrics().lineSpacing() * 4))
+            text_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            text_edit.setMaximumWidth(600)
             widget = text_edit
             accessor = lambda editor=text_edit: editor.toPlainText().strip()
             setter = lambda val, editor=text_edit: editor.setText(str(val))
@@ -332,6 +356,8 @@ class AuthView(QWidget):
         else:
             line_edit = QLineEdit()
             line_edit.setPlaceholderText(field.placeholder)
+            line_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            line_edit.setMaximumWidth(600)
             widget = line_edit
             accessor = lambda line=line_edit: line.text().strip()
             setter = lambda val, line=line_edit: line.setText(str(val))
