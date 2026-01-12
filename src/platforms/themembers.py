@@ -34,22 +34,29 @@ class TheMembersPlatform(BasePlatform):
     def auth_instructions(cls) -> str:
         return """
 INFORME O DOMINIO DO SITE SEM NENHUM /LOGIN (exemplo: https://app.exemplo.com)
-junto com seu e-mail e senha. Ou então, o TOKEN Authorization.
-Para obter o token:
+junto com seu e-mail e senha. Ou então, preencha o campo Token e deixe e-mail/senha em branco.
+Para obter o token (limitado a nao baixar os videos):
 1) Abra o seu navegador e vá para a página de Login
 2) Abra as Ferramentas de Desenvolvedor (F12) → aba Rede (também pode ser chamada de Requisições ou Network).
 3) Faça o login normalmente sem fechar essa aba e aguarde aparecer a lista de produtos da conta.
 4) Use a lupa para procurar a URL "https://api.themembers.com.br/api/".
 5) Clique em qualquer requisição que tenha o indicativo GET ou POST e vá para a aba Headers (Cabeçalhos), em requisição lá em baixo.
-6) Copie o valor do cabeçalho 'Authorization' — ele se parece com 'Bearer <token>'. Cole apenas a parte do token aqui.
+6) Copie o valor do cabeçalho 'Authorization' — ele se parece com 'Bearer <token>'. Cole o valor completo no campo Token.
 """
 
     def authenticate(self, credentials: Dict[str, Any]) -> None:
         self.domain = credentials.get("domain", "").replace("https://", "").replace("http://", "").strip().rstrip("/")
         username = credentials.get("username")
         password = credentials.get("password")
-        if not self.domain or not username or not password:
-            raise ValueError("Domínio, email e senha são obrigatórios.")
+        token = credentials.get("token")
+
+        if not self.domain:
+            raise ValueError("Domínio é obrigatório.")
+
+        if not token:
+            if not username or not password:
+                raise ValueError("Domínio, email e senha são obrigatórios (ou informe um Token).")
+
         resolve_url = f"{self.api_base}/getTenant?domain={self.domain}"
         self._session = requests.Session()
         self._session.headers.update({
@@ -70,19 +77,26 @@ Para obter o token:
         except (KeyError, ValueError) as e:
             raise ValueError(f"Erro ao processar dados do domínio: {e}")
 
-        login_url = f"{self.api_base}/auth/login"
-        payload = {
-            "email": username,
-            "password": password,
-            "tenant_id": int(self.tenant_id)
-        }
-
         self._session.headers.update({
             "x-platform-id": self.tenant_id,
             "x-tenant-id": self.tenant_id,
             "Tenant-ID": self.tenant_id,
             "orgId": self.organization_id
         })
+
+        if token:
+            clean_token = token.replace("Bearer ", "").strip()
+            self._session.headers.update({
+                "Authorization": f"Bearer {clean_token}"
+            })
+            return
+
+        login_url = f"{self.api_base}/auth/login"
+        payload = {
+            "email": username,
+            "password": password,
+            "tenant_id": int(self.tenant_id)
+        }
 
         resp_login = self._session.post(login_url, json=payload)
 
