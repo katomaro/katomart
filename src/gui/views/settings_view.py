@@ -334,6 +334,9 @@ class SettingsView(QWidget):
         )
         self._update_whisper_fields_state(False)
 
+        self.skip_video_download_check = QCheckBox("Não baixar vídeos (Ignora vídeos da descrição)")
+        self._paid_form_layout.addRow(self.skip_video_download_check)
+
         self._paid_form_layout.addRow("User Agent:", self.user_agent_edit)
         self._paid_form_layout.addRow(
             "Máximo de Downloads Concorrentes:", self.max_concurrent_downloads_spin
@@ -359,6 +362,7 @@ class SettingsView(QWidget):
         self._paid_form_layout.addRow(
             "Formato da Transcrição:", self.whisper_output_format_combo
         )
+
         self.embed_blacklist_edit = QTextEdit()
         self.embed_blacklist_edit.setPlaceholderText("example.com\ndocs.example.com\n...")
         self.embed_blacklist_edit.setFixedHeight(100)
@@ -463,6 +467,8 @@ class SettingsView(QWidget):
         if output_format_index != -1:
             self.whisper_output_format_combo.setCurrentIndex(output_format_index)
 
+        self.skip_video_download_check.setChecked(getattr(settings, "skip_video_download", False))
+
         self._update_whisper_fields_state(settings.use_whisper_transcription)
         self._update_paid_settings_state(settings)
         try:
@@ -541,6 +547,7 @@ class SettingsView(QWidget):
             permissions=list(current_settings.permissions),
             has_full_permissions=current_settings.has_full_permissions,
             lesson_watch_status_behavior=self.lesson_watch_status_combo.currentData(),
+            skip_video_download=self.skip_video_download_check.isChecked(),
         )
         self._settings_manager.save_settings(updated_settings)
 

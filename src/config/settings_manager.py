@@ -72,6 +72,7 @@ class AppSettings:
     bento4_path: str = "./bento4/bin"
     lesson_access_delay: int = 0
     lesson_watch_status_behavior: str = "none"
+    skip_video_download: bool = False
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "AppSettings":
@@ -129,6 +130,7 @@ class SettingsManager:
             "whisper_output_format": default.whisper_output_format,
             "create_resume_summary": default.create_resume_summary,
             "allowed_attachment_extensions": default.allowed_attachment_extensions,
+            "skip_video_download": default.skip_video_download,
         }
         return replace(settings, **paid_only_fields)
 
@@ -180,6 +182,7 @@ class SettingsManager:
                 "whisper_output_format",
                 "create_resume_summary",
                 "allowed_attachment_extensions",
+                "skip_video_download",
             }
 
             cached_premium_values = {

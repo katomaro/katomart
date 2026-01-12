@@ -655,43 +655,46 @@ class DownloadWorker(QRunnable):
                                                     )
                                     self.signals.result.emit(f"      - Descrição salva em {description_path}")
 
-                            for video_index, video in enumerate(lesson_details.videos, start=1):
-                                video_order = video.order or video_index
-                                video_name = f"{video_order}. Aula"
-                                video_name = truncate_filename_preserve_ext(video_name, getattr(self.settings, 'max_file_name_length', 30))
-                                video_path = lesson_path / video_name
-                                logging.info(f"Baixando Vídeo '{video_name}' para '{video_path}'")
-                                downloader = DownloaderFactory.get_downloader(video.url, self.settings_manager)
-                                video_key = str(video.video_id or video_order)
+                            if getattr(self.settings, "skip_video_download", False):
+                                self.signals.result.emit("    - [CONFIG] Pulando download de vídeos principais (configuração ativa).")
+                            else:
+                                for video_index, video in enumerate(lesson_details.videos, start=1):
+                                    video_order = video.order or video_index
+                                    video_name = f"{video_order}. Aula"
+                                    video_name = truncate_filename_preserve_ext(video_name, getattr(self.settings, 'max_file_name_length', 30))
+                                    video_path = lesson_path / video_name
+                                    logging.info(f"Baixando Vídeo '{video_name}' para '{video_path}'")
+                                    downloader = DownloaderFactory.get_downloader(video.url, self.settings_manager)
+                                    video_key = str(video.video_id or video_order)
 
-                                if self._should_skip_download(lesson_entry, "videos", video_key):
-                                    self.signals.result.emit(
-                                        f"    - Vídeo já baixado previamente pelo resumo: {video_name}"
-                                    )
-                                    continue
+                                    if self._should_skip_download(lesson_entry, "videos", video_key):
+                                        self.signals.result.emit(
+                                            f"    - Vídeo já baixado previamente pelo resumo: {video_name}"
+                                        )
+                                        continue
 
-                                try:
-                                    extra_props = getattr(video, 'extra_props', {})
+                                    try:
+                                        extra_props = getattr(video, 'extra_props', {})
 
-                                    self._run_with_retries(
-                                        lambda: downloader.download_video(
-                                            video.url, self.platform.get_session(), video_path, extra_props=extra_props
-                                        ),
-                                        description=f"Download do vídeo '{video_name}'",
-                                    )
-                                    last_downloaded_video_path = video_path
-                                    self._mark_resume_status(
-                                        course_id_str, module_key, lesson_key, "videos", video_key, True
-                                    )
-                                    self.signals.result.emit(f"    - Vídeo baixado: {video_name}")
-                                    self._maybe_transcribe_video(video_path)
-                                except Exception:
-                                    self._mark_resume_status(
-                                        course_id_str, module_key, lesson_key, "videos", video_key, False
-                                    )
-                                    self.signals.result.emit(
-                                        f"    - [ERROR] Falha ao baixar vídeo: {video_name}"
-                                    )
+                                        self._run_with_retries(
+                                            lambda: downloader.download_video(
+                                                video.url, self.platform.get_session(), video_path, extra_props=extra_props
+                                            ),
+                                            description=f"Download do vídeo '{video_name}'",
+                                        )
+                                        last_downloaded_video_path = video_path
+                                        self._mark_resume_status(
+                                            course_id_str, module_key, lesson_key, "videos", video_key, True
+                                        )
+                                        self.signals.result.emit(f"    - Vídeo baixado: {video_name}")
+                                        self._maybe_transcribe_video(video_path)
+                                    except Exception:
+                                        self._mark_resume_status(
+                                            course_id_str, module_key, lesson_key, "videos", video_key, False
+                                        )
+                                        self.signals.result.emit(
+                                            f"    - [ERROR] Falha ao baixar vídeo: {video_name}"
+                                        )
 
                             for attachment_index, attachment in enumerate(lesson_details.attachments, start=1):
                                 attachment_order = attachment.order or attachment_index
