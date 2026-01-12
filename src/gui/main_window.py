@@ -24,8 +24,8 @@ class MainWindow(QMainWindow):
         """Initializes the main window."""
         super().__init__(parent)
         self.setWindowTitle("Katomart! Visite o Repositório em github.com/katomaro/katomart ou assine em katomaro.com/store/katomart")
-        self.setMinimumSize(600, 400)
-        self.resize(700, 650)
+        self.setMinimumSize(650, 450)
+        self.resize(750, 650)
 
         self._settings_manager = settings_manager
         self._platform: BasePlatform | None = None
