@@ -133,11 +133,26 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, "Erro na execução", f"Ocorreu um erro: {message}")
 
     def _search_courses(self, query: str) -> None:
-        """Searches for courses on the platform."""
-        if self._platform and self._platform.credentials:
-             self._fetch_courses(self._platform_name, self._platform.credentials, query=query)
-        else:
-             QMessageBox.warning(self, "Erro", "Não foi possível pesquisar: Credenciais não encontradas.")
+        """Searches for courses on the platform using the existing authenticated session."""
+        if not self._platform or not self._platform.credentials:
+            QMessageBox.warning(self, "Erro", "Não foi possível pesquisar: Credenciais não encontradas.")
+            return
+
+        self.course_selection_view.search_button.setEnabled(False)
+        self.course_selection_view.search_button.setText("Pesquisando...")
+
+        worker = FetchCoursesWorker(self._platform, self._platform.credentials, query=query)
+        worker.signals.result.connect(self._on_search_results)
+        worker.signals.error.connect(self._handle_worker_error)
+        worker.signals.finished.connect(lambda: self.course_selection_view.search_button.setEnabled(True))
+        worker.signals.finished.connect(lambda: self.course_selection_view.search_button.setText("Pesquisar"))
+        self._thread_pool.start(worker)
+
+    def _on_search_results(self, courses_json: str) -> None:
+        """Handles search results without changing views."""
+        courses = json.loads(courses_json)
+        logging.info(f"Search results: {len(courses)} items")
+        self.course_selection_view.update_courses(courses)
 
     def _fetch_courses(self, platform_name: str, credentials: dict, query: str | None = None) -> None:
         """Starts a worker to fetch courses."""
@@ -191,6 +206,11 @@ class MainWindow(QMainWindow):
                 self._resume_state = None
                 return
             self._resume_state = None
+
+        # Check if platform requires search
+        platform_class = PlatformFactory.get_platform_class(self._platform_name or "")
+        requires_search = getattr(platform_class, "requires_search", lambda: False)()
+        self.course_selection_view.set_requires_search(requires_search)
 
         self.course_selection_view.update_courses(courses)
         self._stacked_widget.setCurrentWidget(self.course_selection_view)

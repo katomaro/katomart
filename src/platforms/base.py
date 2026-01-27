@@ -194,6 +194,15 @@ class BasePlatform(ABC):
         """Returns platform specific instructions for collecting credentials."""
         return "Nenhuma instrução disponível para esta plataforma."
 
+    @classmethod
+    def requires_search(cls) -> bool:
+        """
+        Returns True if this platform requires a search query to fetch courses.
+        Default is False. Platforms that cannot list all courses at once
+        should override this to return True.
+        """
+        return False
+
     def get_session(self) -> Optional[requests.Session]:
         """Returns the authenticated requests session."""
         return self._session

@@ -55,9 +55,13 @@ class FetchCoursesWorker(QRunnable):
         Authenticates and fetches courses using the provided platform.
         """
         try:
-            logging.info("Worker: Autenticando e obtendo cursos...")
-            self.platform.authenticate(self.credentials)
-            
+            # Skip authentication if platform already has an active session
+            if self.platform.get_session() is None:
+                logging.info("Worker: Autenticando e obtendo cursos...")
+                self.platform.authenticate(self.credentials)
+            else:
+                logging.info("Worker: Usando sessão existente...")
+
             if self.query:
                 logging.info(f"Worker: Pesquisando cursos com query: '{self.query}'")
                 courses = self.platform.search_courses(self.query)

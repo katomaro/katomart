@@ -9,25 +9,36 @@ class CourseSelectionView(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._requires_search = False
         layout = QVBoxLayout(self)
+
+        # Info label for platforms that require search
+        self.search_info_label = QLabel(
+            "Esta plataforma requer que voce faca uma BUSCA para localizar conteudos. "
+            "Digite o termo de pesquisa e clique em Pesquisar."
+        )
+        self.search_info_label.setWordWrap(True)
+        self.search_info_label.setStyleSheet("color: #0066cc; font-weight: bold; padding: 8px; background: #e6f2ff; border-radius: 4px;")
+        self.search_info_label.setVisible(False)
+        layout.addWidget(self.search_info_label)
 
         search_layout = QHBoxLayout()
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Pesquisar curso...")
         self.search_input.returnPressed.connect(self._perform_search)
-        
+
         self.search_button = QPushButton("Pesquisar")
         self.search_button.clicked.connect(self._perform_search)
-        
+
         self.platform_search_checkbox = QCheckBox("Listar conteudo novamente da plataforma para localizar o item (evite)")
-        self.platform_search_checkbox.setToolTip("Se marcado, a pesquisa será feita diretamente na plataforma.")
+        self.platform_search_checkbox.setToolTip("Se marcado, a pesquisa sera feita diretamente na plataforma.")
 
         search_layout.addWidget(QLabel("Pesquisar:"))
         search_layout.addWidget(self.search_input)
         search_layout.addWidget(self.search_button)
         search_layout.addWidget(self.platform_search_checkbox)
         layout.addLayout(search_layout)
-        
+
         layout.addWidget(QLabel("Selecione os cursos para download:"))
 
         self.course_list = QListWidget()
@@ -40,6 +51,18 @@ class CourseSelectionView(QWidget):
         
         layout.addWidget(self.course_list)
         layout.addWidget(self.next_button)
+
+    def set_requires_search(self, requires: bool) -> None:
+        """Sets whether this platform requires search to find courses."""
+        self._requires_search = requires
+        self.search_info_label.setVisible(requires)
+        if requires:
+            self.platform_search_checkbox.setChecked(True)
+            self.platform_search_checkbox.setEnabled(False)
+            self.platform_search_checkbox.setToolTip("Esta plataforma sempre busca na fonte.")
+        else:
+            self.platform_search_checkbox.setEnabled(True)
+            self.platform_search_checkbox.setToolTip("Se marcado, a pesquisa sera feita diretamente na plataforma.")
 
     def update_courses(self, courses: List[Dict[str, Any]]) -> None:
         """Clears and repopulates the course list widget."""
