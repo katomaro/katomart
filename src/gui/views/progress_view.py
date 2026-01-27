@@ -7,7 +7,7 @@ class ProgressView(QWidget):
         super().__init__(parent)
         layout = QVBoxLayout(self)
         
-        layout.addWidget(QLabel("Download Progress:"))
+        layout.addWidget(QLabel("Progresso geral de download:"))
         self.progress_bar = QProgressBar()
         self.progress_bar.setValue(0)
 

@@ -471,7 +471,15 @@ class DownloadWorker(QRunnable):
 
             self._ensure_resume_state(session)
 
-            total_lessons = sum(len(module.get("lessons", [])) for course in self.selection.values() for module in course.get("modules", []))
+            # Count only selected lessons (where download is not False)
+            total_lessons = sum(
+                1
+                for course in self.selection.values()
+                for module in course.get("modules", [])
+                if module.get("download") is not False
+                for lesson in module.get("lessons", [])
+                if lesson.get("download") is not False
+            )
             lessons_processed = 0
 
             for course_id, course_data in self.selection.items():
@@ -506,9 +514,6 @@ class DownloadWorker(QRunnable):
                     for lesson_index, lesson in enumerate(module.get("lessons", []), start=1):
                         if lesson.get("download") is False:
                             self.signals.result.emit(f"    - Pulando aula não selecionada para download ou bloqueada: {lesson.get('title', 'Unknown Lesson')}")
-                            lessons_processed += 1
-                            progress = int((lessons_processed / total_lessons) * 100) if total_lessons > 0 else 0
-                            self.signals.progress.emit(progress)
                             continue
 
                         lesson_key = (
