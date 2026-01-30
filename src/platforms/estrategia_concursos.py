@@ -622,13 +622,39 @@ Marque a opção "Emular Navegador" e faça login manualmente no navegador, apó
             return False
 
         try:
-            # Use session for authenticated downloads
-            response = self._session.get(attachment.url, stream=True)
-            response.raise_for_status()
+            # First, get the initial response which may contain the actual PDF URL
+            initial_response = self._session.get(attachment.url)
+            initial_response.raise_for_status()
 
+            content_type = initial_response.headers.get("Content-Type", "").lower()
+
+            # Check if response is a URL (text) rather than binary PDF content
+            if "text" in content_type or "html" in content_type or "json" in content_type:
+                pdf_url = initial_response.text.strip()
+
+                # Verify it looks like a URL
+                if pdf_url.startswith("http://") or pdf_url.startswith("https://"):
+                    logger.info("Anexo retornou URL, baixando PDF de: %s", pdf_url)
+
+                    # Create a new session with user preferences to download the actual PDF
+                    download_session = requests.Session()
+                    if self._settings:
+                        download_session.headers.update({
+                            "User-Agent": getattr(self._settings, "user_agent", "Mozilla/5.0")
+                        })
+
+                    response = download_session.get(pdf_url, stream=True, timeout=60)
+                    response.raise_for_status()
+
+                    with open(download_path, "wb") as file_handle:
+                        for chunk in response.iter_content(chunk_size=8192):
+                            file_handle.write(chunk)
+
+                    return True
+
+            # If it's already binary content, save directly
             with open(download_path, "wb") as file_handle:
-                for chunk in response.iter_content(chunk_size=8192):
-                    file_handle.write(chunk)
+                file_handle.write(initial_response.content)
 
             return True
         except Exception as exc:
