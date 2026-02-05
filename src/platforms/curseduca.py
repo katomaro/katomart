@@ -3,12 +3,11 @@ from __future__ import annotations
 import json
 import logging
 import re
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any, Dict, List, Optional
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlparse
 
 import requests
-from bs4 import BeautifulSoup
 
 from src.app.api_service import ApiService
 from src.app.models import Attachment, Description, LessonContent, Video
@@ -17,37 +16,62 @@ from src.platforms.base import AuthField, BasePlatform, PlatformFactory
 
 LOGIN_DISCOVERY_URL = "https://application.curseduca.pro/platform-by-url"
 LOGIN_AUTH_URL = "https://prof.curseduca.pro/login?redirectUrl="
+COURSES_ACCESS_URL = "https://prof.curseduca.pro/me/access"
 LESSON_WATCH_URL = "https://clas.curseduca.pro/bff/aulas/{lesson_uuid}/watch"
 
 
 def _extract_next_data(html_content: str) -> Optional[Dict[str, Any]]:
-    """Extracts the Next.js payload with course data from the HTML."""
-    script_pattern = r"self\.__next_f\.push\(\[(.*?)\]\)"
+    """Extracts the Next.js RSC payload with course data from the HTML."""
+    # Find all __next_f.push calls and extract the RSC data lines
+    script_pattern = r"self\.__next_f\.push\(\[1,\"(.*?)\"\]\)"
     matches = re.findall(script_pattern, html_content, re.DOTALL)
 
-    for match in matches:
-        parts = match.split(",", 1)
-        if len(parts) < 2:
-            continue
-        _, payload = parts
-        payload = payload.strip()
+    # Concatenate all RSC data and parse key:value pairs
+    rsc_data = "".join(matches)
+    # Unescape the JSON string escapes
+    rsc_data = rsc_data.replace("\\n", "\n").replace("\\\"", '"').replace("\\\\", "\\")
 
+    # Parse RSC format: each line is like "key:{json}" or "key:[json]"
+    refs: Dict[str, Any] = {}
+    for line in rsc_data.split("\n"):
+        line = line.strip()
+        if not line or ":" not in line:
+            continue
+        # Split on first colon to get key and value
+        colon_idx = line.find(":")
+        if colon_idx < 1:
+            continue
+        key = line[:colon_idx]
+        value_str = line[colon_idx + 1:]
         try:
-            candidate = json.loads(payload)
-        except Exception:
+            refs[key] = json.loads(value_str)
+        except json.JSONDecodeError:
             continue
 
-        if isinstance(candidate, str) and candidate.startswith("b:"):
-            try:
-                decoded = json.loads(candidate[2:])
-            except Exception:
-                continue
+    def resolve_refs(obj: Any, depth: int = 0) -> Any:
+        """Recursively resolve $XX references."""
+        if depth > 50:
+            return obj
+        if isinstance(obj, str) and obj.startswith("$"):
+            ref_key = obj[1:]
+            if ref_key in refs:
+                return resolve_refs(refs[ref_key], depth + 1)
+            return obj
+        if isinstance(obj, dict):
+            return {k: resolve_refs(v, depth + 1) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [resolve_refs(item, depth + 1) for item in obj]
+        return obj
 
-            if isinstance(decoded, list) and len(decoded) >= 4 and isinstance(decoded[3], dict):
-                return decoded[3]
+    # Find the content/course structure - look for MODULE type objects
+    modules = []
+    for key, value in refs.items():
+        if isinstance(value, dict) and value.get("type") == "MODULE":
+            resolved = resolve_refs(value)
+            modules.append(resolved)
 
-        if isinstance(candidate, dict):
-            return candidate
+    if modules:
+        return {"modules": modules, "refs": refs}
 
     return None
 
@@ -56,6 +80,53 @@ def _simplify_course_structure(course_data: Dict[str, Any]) -> Dict[str, Any]:
     """Reduces the course payload to modules and lessons only."""
     simplified = {"title": "", "slug": "", "modules": []}
 
+    # Handle new RSC format with direct modules list
+    rsc_modules = course_data.get("modules", [])
+    if rsc_modules:
+        for module_index, item in enumerate(rsc_modules, start=1):
+            if not isinstance(item, dict) or item.get("type") != "MODULE":
+                continue
+
+            module_data = item.get("data", {})
+            if isinstance(module_data, str):
+                continue  # Unresolved reference
+
+            module_title = module_data.get("title", f"Módulo {module_index}")
+            module = {
+                "id": str(module_data.get("id") or module_data.get("uuid") or f"module-{module_index}"),
+                "title": module_title,
+                "order": module_index,
+                "lessons": [],
+                "locked": False,
+            }
+
+            structure = module_data.get("structure", [])
+            if isinstance(structure, list):
+                for lesson_index, lesson_item in enumerate(structure, start=1):
+                    if not isinstance(lesson_item, dict) or lesson_item.get("type") != "LESSON":
+                        continue
+
+                    lesson_data = lesson_item.get("data", {})
+                    if isinstance(lesson_data, str):
+                        continue  # Unresolved reference
+
+                    lesson_title = lesson_data.get("title", f"Aula {lesson_index}")
+                    lesson_order = lesson_item.get("order") or lesson_data.get("order") or lesson_index
+                    module["lessons"].append(
+                        {
+                            "id": str(lesson_data.get("id") or lesson_data.get("uuid") or f"lesson-{lesson_index}"),
+                            "uuid": lesson_data.get("uuid") or str(lesson_data.get("id")),
+                            "title": lesson_title,
+                            "order": lesson_order,
+                            "type": lesson_data.get("type"),
+                            "locked": lesson_data.get("status") == "LOCKED",
+                        }
+                    )
+
+            simplified["modules"].append(module)
+        return simplified
+
+    # Fallback: handle old format with nested content structure
     content = course_data.get("content", {})
     inner_content = content.get("content", {}) if isinstance(content, dict) else {}
     simplified["title"] = inner_content.get("title", "Curso")
@@ -68,7 +139,7 @@ def _simplify_course_structure(course_data: Dict[str, Any]) -> Dict[str, Any]:
         module_data = item.get("data", {})
         module_title = module_data.get("title", f"Módulo {module_index}")
         module = {
-            "id": module_data.get("uuid") or module_data.get("id") or f"module-{module_index}",
+            "id": str(module_data.get("uuid") or module_data.get("id") or f"module-{module_index}"),
             "title": module_title,
             "order": module_index,
             "lessons": [],
@@ -82,8 +153,8 @@ def _simplify_course_structure(course_data: Dict[str, Any]) -> Dict[str, Any]:
             lesson_title = lesson_data.get("title", f"Aula {lesson_index}")
             module["lessons"].append(
                 {
-                    "id": lesson_data.get("id") or lesson_data.get("uuid") or f"lesson-{lesson_index}",
-                    "uuid": lesson_data.get("uuid") or lesson_data.get("id"),
+                    "id": str(lesson_data.get("id") or lesson_data.get("uuid") or f"lesson-{lesson_index}"),
+                    "uuid": lesson_data.get("uuid") or str(lesson_data.get("id")),
                     "title": lesson_title,
                     "order": lesson_data.get("order", lesson_index),
                     "type": lesson_data.get("type"),
@@ -108,6 +179,8 @@ class CurseducaPlatform(BasePlatform):
         self._tenant_uuid: str = ""
         self._tenant_id: str = ""
         self._current_login_id: str = ""
+        self._auth_id: str = ""
+        self._member_data: Dict[str, Any] = {}
 
     @classmethod
     def auth_fields(cls) -> List[AuthField]:
@@ -196,22 +269,40 @@ Para plataformas whitelabel Curseduca:
         self._tenant_uuid = tenant.get("uuid", "")
         self._tenant_id = str(tenant.get("id", ""))
         self._current_login_id = auth_data.get("currentLoginId", "")
+        self._auth_id = str(auth_data.get("authenticationId", ""))
+        self._member_data = member
 
         self._configure_cookies(base_url)
         logging.info("Sessão autenticada na Curseduca.")
 
     def _configure_cookies(self, base_url: str) -> None:
         domain = urlparse(base_url).netloc
-        cookie_domain = f".{domain}" if not domain.startswith(".") else domain
-        self._session.cookies.set("access_token", self._access_token, domain=cookie_domain)
-        self._session.cookies.set("api_key", self._api_key, domain=cookie_domain)
-        self._session.cookies.set("tenant_slug", self._tenant_slug, domain=cookie_domain)
-        self._session.cookies.set("tenant_uuid", self._tenant_uuid, domain=cookie_domain)
-        self._session.cookies.set("tenantId", self._tenant_id, domain=cookie_domain)
-        self._session.cookies.set("current_login_id", self._current_login_id, domain=cookie_domain)
-        self._session.cookies.set("platform_url", base_url, domain=cookie_domain)
-        self._session.cookies.set("language", "pt_BR", domain=cookie_domain)
-        self._session.cookies.set("language_tenant", "1", domain=cookie_domain)
+        # Set cookies with explicit domain and path to ensure they're sent correctly
+        cookie_params = {"domain": domain, "path": "/"}
+        self._session.cookies.set("access_token", self._access_token, **cookie_params)
+        self._session.cookies.set("api_key", self._api_key, **cookie_params)
+        self._session.cookies.set("tenant_slug", self._tenant_slug, **cookie_params)
+        self._session.cookies.set("tenant_uuid", self._tenant_uuid, **cookie_params)
+        self._session.cookies.set("tenantId", self._tenant_id, **cookie_params)
+        self._session.cookies.set("current_login_id", self._current_login_id, **cookie_params)
+        self._session.cookies.set("platform_url", base_url, **cookie_params)
+        self._session.cookies.set("language", "pt_BR", **cookie_params)
+        self._session.cookies.set("language_tenant", self._tenant_id or "1", **cookie_params)
+
+        # Build and set the user cookie (required for page authentication)
+        if self._member_data:
+            user_cookie = {
+                "id_prof_profile": self._member_data.get("id"),
+                "nm_name": self._member_data.get("name", ""),
+                "id_prof_authentication": int(self._auth_id) if self._auth_id else None,
+                "im_image": self._member_data.get("image"),
+                "nm_email": self._member_data.get("email", ""),
+                "tenant_uuid": self._tenant_uuid,
+                "is_admin": self._member_data.get("isAdmin", False),
+            }
+            self._session.cookies.set("user", json.dumps(user_cookie), **cookie_params)
+
+        logging.info("Curseduca cookies configured for domain %s: %s", domain, list(self._session.cookies.keys()))
 
     def get_session(self) -> Optional[requests.Session]:
         return self._session
@@ -220,40 +311,61 @@ Para plataformas whitelabel Curseduca:
         if not self._session or not self._base_url:
             raise ConnectionError("A sessão não está autenticada.")
 
+        headers = {
+            "Authorization": f"Bearer {self._access_token}",
+            "api_key": self._api_key,
+            "Content-Type": "application/json",
+            "Origin": self._base_url,
+            "Referer": f"{self._base_url}/",
+        }
+
+        logging.info("Curseduca fetching courses from API: %s", COURSES_ACCESS_URL)
+        response = self._session.get(COURSES_ACCESS_URL, headers=headers, params={"slug": ""})
+        logging.info("Curseduca API response status: %s", response.status_code)
+        response.raise_for_status()
+
+        try:
+            data = response.json()
+        except Exception as e:
+            logging.error("Curseduca failed to parse JSON response: %s", e)
+            logging.error("Response text (first 500 chars): %s", response.text[:500])
+            raise
+
+        logging.info("Curseduca courses API response size: %s bytes", len(response.text))
+
         courses: List[Dict[str, Any]] = []
-        page = 1
+        access_list = data.get("access", [])
+        logging.info("Curseduca found %s courses in API response", len(access_list))
 
-        while True:
-            response = self._session.get(
-                f"{self._base_url}/restrita", params={"redirect": "0", "limit": "100", "page": str(page)}
-            )
-            response.raise_for_status()
+        for item in access_list:
+            course_id = item.get("id")
+            title = item.get("title", "")
+            slug = item.get("slug", "")
+            if not course_id or not slug:
+                continue
 
-            logging.debug("Curseduca course list page %s content length: %s", page, len(response.text))
+            course_url = f"{self._base_url}/m/lessons/{slug}"
+            courses.append({
+                "id": str(course_id),
+                "name": title,
+                "slug": slug,
+                "url": course_url,
+            })
 
-            soup = BeautifulSoup(response.text, "html.parser")
-            page_courses: List[Dict[str, Any]] = []
-            for card in soup.select("div.classified"):
-                anchor = card.select_one("a.font-size-h4")
-                if not anchor or not anchor.get("href"):
-                    continue
-                name = anchor.get_text(strip=True)
-                href = anchor["href"]
-                full_url = urljoin(self._base_url, href)
-                slug = PurePosixPath(urlparse(full_url).path).name or full_url
-                page_courses.append({"id": slug, "name": name, "slug": slug, "url": full_url})
-
-            if not page_courses:
-                break
-
-            courses.extend(page_courses)
-            page += 1
-
+        logging.info("Curseduca returning %s courses to UI", len(courses))
+        if courses:
+            logging.info("First course: %s", courses[0])
         return courses
 
     def fetch_course_content(self, courses: List[Dict[str, Any]]) -> Dict[str, Any]:
         if not self._session:
             raise ConnectionError("A sessão não está autenticada.")
+
+        # Headers needed for authenticated page requests
+        headers = {
+            "Authorization": f"Bearer {self._access_token}",
+            "api_key": self._api_key,
+        }
 
         result: Dict[str, Any] = {}
         for course in courses:
@@ -261,9 +373,13 @@ Para plataformas whitelabel Curseduca:
             if not course_url:
                 continue
 
-            response = self._session.get(course_url)
+            logging.debug("Curseduca cookies before request: %s", dict(self._session.cookies))
+            response = self._session.get(course_url, headers=headers)
+            logging.info("Curseduca course page response: status=%s, url=%s, final_url=%s",
+                        response.status_code, course_url, response.url)
+            if response.url != course_url:
+                logging.warning("Curseduca course page was redirected - cookies may not be working")
             response.raise_for_status()
-            logging.debug("Curseduca course page fetched: %s", course_url)
             course_data = _extract_next_data(response.text)
             if not course_data:
                 logging.warning("Não foi possível extrair dados para o curso %s", course.get("name"))
@@ -300,13 +416,13 @@ Para plataformas whitelabel Curseduca:
         video_type = lesson.get("type") or lesson_json.get("type")
         video_id = lesson_json.get("videoId")
         if video_id:
-            video_url = None
             if video_type == 7:
                 video_url = f"https://player.vimeo.com/video/{video_id}"
             elif video_type == 4:
                 video_url = f"https://www.youtube.com/watch?v={video_id}"
             else:
-                video_url = str(video_id)
+                # Type 22 and others: ScaleUp/SmartPlayer (Curseduca native)
+                video_url = f"https://player.scaleup.com.br/embed/{video_id}"
 
             content.videos.append(
                 Video(
@@ -316,7 +432,7 @@ Para plataformas whitelabel Curseduca:
                     title=lesson.get("title", "Aula"),
                     size=0,
                     duration=0,
-                    extra_props={"referer": self._base_url}
+                    extra_props={"referer": f"{self._base_url}/"}
                 )
             )
 
@@ -351,8 +467,14 @@ Para plataformas whitelabel Curseduca:
         if not self._session:
             raise ConnectionError("A sessão não está autenticada.")
 
+        headers = {
+            "Authorization": f"Bearer {self._access_token}",
+            "api_key": self._api_key,
+            "Origin": self._base_url,
+        }
+
         try:
-            response = self._session.get(attachment.url, stream=True)
+            response = self._session.get(attachment.url, headers=headers, stream=True)
             response.raise_for_status()
             with open(download_path, "wb") as file_handle:
                 for chunk in response.iter_content(chunk_size=8192):

@@ -18,7 +18,7 @@ class ScaleUpDownloader(BaseDownloader):
         super().__init__(settings_manager)
         self.settings = self.settings_manager.get_settings()
 
-    def _extract_m3u8_url(self, embed_url: str, session: requests.Session) -> str | None:
+    def _extract_m3u8_url(self, embed_url: str, session: requests.Session, extra_props: dict = None) -> str | None:
         """
         Extracts the m3u8 URL from the ScaleUp embed page.
         """
@@ -28,6 +28,10 @@ class ScaleUpDownloader(BaseDownloader):
         headers.update({
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
         })
+
+        # Set Referer from extra_props - required for ScaleUp to return authenticated playlist URL
+        if extra_props and extra_props.get('referer'):
+            headers['Referer'] = extra_props['referer']
 
         try:
             resp = session.get(embed_url, headers=headers, timeout=15)
@@ -59,12 +63,12 @@ class ScaleUpDownloader(BaseDownloader):
         """
         Downloads the video from the ScaleUp embed URL.
         """
-        m3u8_url = self._extract_m3u8_url(url, session)
+        m3u8_url = self._extract_m3u8_url(url, session, extra_props)
         if not m3u8_url:
             return False
 
         logging.info(f"[ScaleUp] Starting download from: {m3u8_url}")
-        
+
         cookie_header = "; ".join([f"{c.name}={c.value}" for c in session.cookies])
 
         ydl_headers = {
@@ -72,7 +76,10 @@ class ScaleUpDownloader(BaseDownloader):
             'Cookie': cookie_header
         }
 
-        if 'Referer' in session.headers:
+        # Use referer from extra_props if available, fallback to session headers
+        if extra_props and extra_props.get('referer'):
+            ydl_headers['Referer'] = extra_props['referer']
+        elif 'Referer' in session.headers:
             ydl_headers['Referer'] = session.headers['Referer']
         if 'Origin' in session.headers:
             ydl_headers['Origin'] = session.headers['Origin']
