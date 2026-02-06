@@ -5,7 +5,7 @@ import logging
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import requests
 
@@ -436,6 +436,23 @@ Para plataformas whitelabel Curseduca:
                 )
             )
 
+        # Handle type 2 lessons (PDFs/Slides/Materials) where content is in filePath
+        file_path = lesson_json.get("filePath") or ""
+        if not video_id and file_path.startswith("https://media.curseduca.pro/pdf"):
+            lesson_title = lesson.get("title") or lesson_json.get("title") or "documento"
+            # Clean up the title for use as filename
+            file_name = f"{lesson_title}.pdf"
+            content.attachments.append(
+                Attachment(
+                    attachment_id=str(lesson_json.get("id", "pdf")),
+                    url=file_path,
+                    filename=file_name,
+                    order=1,
+                    extension="pdf",
+                    size=0,
+                )
+            )
+
         complementaries = lesson_json.get("complementaries") or []
         for file_index, complementary in enumerate(complementaries, start=1):
             file_name = complementary.get("title") or f"anexo_{file_index}"
@@ -445,7 +462,7 @@ Para plataformas whitelabel Curseduca:
 
             download_url = (
                 "https://clas.curseduca.pro/lessons-complementaries/download"
-                f"?fileName={file_name}&fileUrl={file_url}&api_key={self._api_key}"
+                f"?fileName={quote(file_name, safe='')}&fileUrl={quote(file_url, safe='')}&api_key={self._api_key}"
             )
             extension = file_name.split(".")[-1] if "." in file_name else ""
             content.attachments.append(
@@ -471,10 +488,11 @@ Para plataformas whitelabel Curseduca:
             "Authorization": f"Bearer {self._access_token}",
             "api_key": self._api_key,
             "Origin": self._base_url,
+            "Referer": f"{self._base_url}/",
         }
 
         try:
-            response = self._session.get(attachment.url, headers=headers, stream=True)
+            response = self._session.get(attachment.url, headers=headers, stream=True, timeout=60)
             response.raise_for_status()
             with open(download_path, "wb") as file_handle:
                 for chunk in response.iter_content(chunk_size=8192):
