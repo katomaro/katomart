@@ -406,28 +406,56 @@ Para autenticação manual (Token Direto, não recomendado, use credenciais se p
 
         contents = lesson_data.get("contents", [])
         video_idx = 1
+        extra_descriptions = []
+
         for item in contents:
             type_id = item.get("type", {}).get("id")
             video_url = None
-            
+
+            # Type 1: YouTube URL in content field
+            if type_id == 1:
+                video_url = item.get("content") or item.get("embed")
+                if video_url:
+                    logger.debug(f"Nutror: YouTube video found: {video_url}")
+
+            # Type 4: Text description
+            elif type_id == 4:
+                text_content = item.get("content") or item.get("description") or ""
+                if text_content:
+                    extra_descriptions.append(text_content)
+                    logger.debug(f"Nutror: Text content found (type 4)")
+
             # Type 9: SafeVideo / Bunkr
-            if type_id == 9:
+            elif type_id == 9:
                 video_url = item.get("embed")
+
             else:
-                logger.debug(f"Nutror: Conteúdo não tratado encontrado (Type {type_id}): {item}")
-            
-            # Type 4: Text (usually ignored or handled as description, but sometimes in contents)
-            
+                logger.debug(f"Nutror: Conteudo nao tratado encontrado (Type {type_id}): {item}")
+
             if video_url:
                 content.videos.append(Video(
                     video_id=str(item.get("id")),
                     url=video_url,
-                    title=lesson_data.get("title") or f"Vídeo {video_idx}",
+                    title=lesson_data.get("title") or f"Video {video_idx}",
                     order=item.get("sequence", video_idx),
                     size=0,
                     duration=0
                 ))
                 video_idx += 1
+
+        # Append extra text descriptions from type 4 contents
+        if extra_descriptions:
+            combined_extra = "\n\n".join(extra_descriptions)
+            if content.description:
+                content.description = Description(
+                    text=f"{content.description.text}\n\n{combined_extra}",
+                    description_type="html"
+                )
+            else:
+                content.description = Description(
+                    text=combined_extra,
+                    description_type="html"
+                )
 
         files = lesson_data.get("lesson_files", [])
         for idx, file_item in enumerate(files, 1):
