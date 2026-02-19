@@ -1,0 +1,40 @@
+# Reference parsers
+old/
+downloads/
+
+# Python cache files
+__pycache__/
+*.py[cod]
+
+# Debug / Logs
+debug_*
+*.log
+logs/
+debug/
+
+# Venv
+.venv/
+venv/
+env/
+
+# Arquivos extraido de navegador para analise
+har/
+
+# CDM lol
+*.bin
+*.pem
+*.wvd
+
+# hls
+*.mpd
+*.m3u8
+*.har
+
+# Build
+build/
+dist/
+*.spec
+build.py
+
+credentials.json
+settings.json
