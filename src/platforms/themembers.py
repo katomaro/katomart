@@ -257,7 +257,7 @@ Para obter o token (limitado a nao baixar os videos):
                         extra_props={"host": host}
                     ))
             elif host == "vimeo":
-                 content.videos.append(Video(
+                content.videos.append(Video(
                     video_id=video_url,
                     url=video_url,
                     title=data.get("title"),
@@ -266,8 +266,48 @@ Para obter o token (limitado a nao baixar os videos):
                     duration=0,
                     extra_props={"host": host}
                 ))
+            elif host == "panda_video":
+                # PandaVideo embed URL
+                content.videos.append(Video(
+                    video_id=video_url,
+                    url=video_url,
+                    title=data.get("title"),
+                    order=1,
+                    size=0,
+                    duration=0,
+                    extra_props={
+                        "host": host,
+                        "referer": f"https://{self.domain}/"
+                    }
+                ))
+            elif host == "youtube":
+                content.videos.append(Video(
+                    video_id=video_url,
+                    url=video_url,
+                    title=data.get("title"),
+                    order=1,
+                    size=0,
+                    duration=0,
+                    extra_props={"host": host}
+                ))
+            elif host == "url_external":
+                # External URL - use url_external field if available
+                external_url = data.get("url_external") or video_url
+                if external_url:
+                    content.videos.append(Video(
+                        video_id=external_url,
+                        url=external_url,
+                        title=data.get("title"),
+                        order=1,
+                        size=0,
+                        duration=0,
+                        extra_props={"host": host}
+                    ))
+            elif host == "text":
+                # Text-only lesson, no video
+                pass
             else:
-                 content.videos.append(Video(
+                content.videos.append(Video(
                     video_id=video_url,
                     url=video_url,
                     title=data.get("title"),
@@ -278,14 +318,38 @@ Para obter o token (limitado a nao baixar os videos):
                 ))
         pdf_url = data.get("url_pdf")
         if pdf_url:
-             content.attachments.append(Attachment(
+            content.attachments.append(Attachment(
                 attachment_id=lesson_id + "_pdf",
                 url=pdf_url,
                 filename=f"{lesson.get('slug', lesson_id)}.pdf",
                 order=1,
                 extension="pdf",
                 size=0
-             ))
+            ))
+
+        # Fetch additional materials from materials endpoint
+        try:
+            materials_url = f"{self.api_base}/auth/home/materials/{lesson_id}"
+            resp_materials = self._session.get(materials_url)
+            if resp_materials.status_code == 200:
+                materials = resp_materials.json()
+                if isinstance(materials, list):
+                    for idx, material in enumerate(materials, start=2):
+                        mat_url = material.get("url") or material.get("file_url")
+                        mat_name = material.get("title") or material.get("name") or f"Material {idx}"
+                        mat_ext = mat_name.rsplit(".", 1)[-1] if "." in mat_name else ""
+                        if mat_url:
+                            content.attachments.append(Attachment(
+                                attachment_id=f"{lesson_id}_mat_{idx}",
+                                url=mat_url,
+                                filename=mat_name,
+                                order=idx,
+                                extension=mat_ext,
+                                size=0
+                            ))
+        except Exception as e:
+            logging.debug(f"Could not fetch materials for lesson {lesson_id}: {e}")
+
         return content
 
     def download_attachment(self, attachment: "Attachment", download_path: Path, course_slug: str, course_id: str, module_id: str) -> bool:
