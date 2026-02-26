@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import logging
 import re
 from pathlib import Path
@@ -630,20 +631,43 @@ Marque a opção "Emular Navegador" e faça login manualmente no navegador, apó
 
             # Check if response is a URL (text) rather than binary PDF content
             if "text" in content_type or "html" in content_type or "json" in content_type:
-                pdf_url = initial_response.text.strip()
+                response_text = initial_response.text.strip()
+                pdf_url = None
 
-                # Verify it looks like a URL
-                if pdf_url.startswith("http://") or pdf_url.startswith("https://"):
-                    logger.info("Anexo retornou URL, baixando PDF de: %s", pdf_url)
+                # Try plain URL first
+                if response_text.startswith("http://") or response_text.startswith("https://"):
+                    pdf_url = response_text
 
-                    # Create a new session with user preferences to download the actual PDF
+                # Try extracting URL from HTML meta refresh redirect
+                if not pdf_url:
+                    meta_match = re.search(
+                        r'<meta\s+http-equiv=["\']refresh["\']\s+content=["\']0;\s*url=\'([^\']+)\'',
+                        response_text,
+                        re.IGNORECASE,
+                    )
+                    if meta_match:
+                        pdf_url = html.unescape(meta_match.group(1))
+
+                # Fallback: try extracting from <a href="...">
+                if not pdf_url:
+                    href_match = re.search(
+                        r'<a\s+href=["\']([^"\']+\.pdf[^"\']*)["\']',
+                        response_text,
+                        re.IGNORECASE,
+                    )
+                    if href_match:
+                        pdf_url = html.unescape(href_match.group(1))
+
+                if pdf_url:
+                    logger.info("Anexo retornou redirect, baixando PDF de: %s", pdf_url[:120])
+
                     download_session = requests.Session()
                     if self._settings:
                         download_session.headers.update({
                             "User-Agent": getattr(self._settings, "user_agent", "Mozilla/5.0")
                         })
 
-                    response = download_session.get(pdf_url, stream=True, timeout=60)
+                    response = download_session.get(pdf_url, stream=True, timeout=120)
                     response.raise_for_status()
 
                     with open(download_path, "wb") as file_handle:
