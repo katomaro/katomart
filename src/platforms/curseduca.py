@@ -420,6 +420,19 @@ Para plataformas whitelabel Curseduca:
                 video_url = f"https://player.vimeo.com/video/{video_id}"
             elif video_type == 4:
                 video_url = f"https://www.youtube.com/watch?v={video_id}"
+            elif video_type == 20:
+                # Curseduca native player — resolve HLS URL from player API
+                player_resp = self._session.get(
+                    f"https://player.curseduca.pro/videos/{video_id}",
+                    params={"tenant": self._tenant_uuid, "api_key": self._api_key},
+                )
+                player_resp.raise_for_status()
+                player_data = player_resp.json()
+                video_url = (
+                    player_data.get("watch", {}).get("hls")
+                    or player_data.get("watch", {}).get("embed")
+                    or f"https://player.curseduca.com/embed/{video_id}?api_key={self._api_key}"
+                )
             else:
                 # Type 22 and others: ScaleUp/SmartPlayer (Curseduca native)
                 video_url = f"https://player.scaleup.com.br/embed/{video_id}"
