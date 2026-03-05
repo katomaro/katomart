@@ -248,6 +248,8 @@ class SettingsView(QWidget):
         self.bento4_path_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.bento4_path_edit.setMaximumWidth(600)
 
+        self.download_widevine_check = QCheckBox("Baixar Widevine")
+
         self._form_layout.addRow("Caminho para Download:", self.download_path_edit)
         self._form_layout.addRow("Qualidade do Vídeo:", self.video_quality_combo)
         self._form_layout.addRow("Tamanho máximo do nome do Curso:", self.course_name_max_spin)
@@ -290,8 +292,6 @@ class SettingsView(QWidget):
         self.retry_delay_spin.setMinimumWidth(64)
         self.auto_reauth_check = QCheckBox("Tentar re-autenticação automática em caso de erro 400/401")
         self.create_resume_summary_check = QCheckBox("Criar JSON de Resumo")
-
-        self.download_widevine_check = QCheckBox("Baixar Widevine")
 
         self.cdm_path_edit = QLineEdit()
         self.cdm_path_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
