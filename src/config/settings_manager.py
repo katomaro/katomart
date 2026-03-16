@@ -73,6 +73,7 @@ class AppSettings:
     lesson_access_delay: int = 0
     lesson_watch_status_behavior: str = "none"
     skip_video_download: bool = False
+    youtube_cookies_path: str = ""
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "AppSettings":

@@ -248,6 +248,14 @@ class SettingsView(QWidget):
         self.bento4_path_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.bento4_path_edit.setMaximumWidth(600)
 
+        self.youtube_cookies_path_edit = QLineEdit()
+        self.youtube_cookies_path_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.youtube_cookies_path_edit.setMaximumWidth(600)
+        self.youtube_cookies_path_edit.setPlaceholderText("Ex: C:/cookies/youtube_cookies.txt")
+        self.youtube_cookies_path_edit.setToolTip(
+            "Caminho para o arquivo de cookies do YouTube (formato Netscape)."
+        )
+
         self.download_widevine_check = QCheckBox("Baixar Widevine")
 
         self._form_layout.addRow("Caminho para Download:", self.download_path_edit)
@@ -267,6 +275,7 @@ class SettingsView(QWidget):
         self._form_layout.addRow(self.delete_folder_on_error_check)
         self._form_layout.addRow("Caminho do FFmpeg:", self.ffmpeg_path_edit)
         self._form_layout.addRow("Caminho do Bento4 SDK:", self.bento4_path_edit)
+        self._form_layout.addRow("Cookies do YouTube:", self.youtube_cookies_path_edit)
         self._form_layout.addRow(self.download_widevine_check)
 
         general_group = QGroupBox("Configurações Gerais")
@@ -473,6 +482,7 @@ class SettingsView(QWidget):
         self.download_embedded_check.setChecked(settings.download_embedded_videos)
         self.ffmpeg_path_edit.setText(getattr(settings, "ffmpeg_path", "./ffmpeg/bin"))
         self.bento4_path_edit.setText(getattr(settings, "bento4_path", "./bento4/bin"))
+        self.youtube_cookies_path_edit.setText(getattr(settings, "youtube_cookies_path", ""))
 
         self.membership_email_edit.setText(settings.membership_email)
         self.membership_password_edit.setText(settings.membership_password)
@@ -564,6 +574,7 @@ class SettingsView(QWidget):
             delete_folder_on_error=self.delete_folder_on_error_check.isChecked(),
             ffmpeg_path=self.ffmpeg_path_edit.text().strip(),
             bento4_path=self.bento4_path_edit.text().strip(),
+            youtube_cookies_path=self.youtube_cookies_path_edit.text().strip(),
             allowed_attachment_extensions=[
                 line.strip() for line in self.allowed_extensions_edit.toPlainText().splitlines() if line.strip()
             ],

@@ -80,6 +80,10 @@ class YtdlpDownloader(BaseDownloader):
         if self.settings.user_agent:
             ydl_opts['user_agent'] = self.settings.user_agent
 
+        cookies_path = getattr(self.settings, 'youtube_cookies_path', '')
+        if cookies_path and Path(cookies_path).is_file():
+            ydl_opts['cookiefile'] = cookies_path
+
         if ffmpeg_exe:
             ydl_opts['ffmpeg_location'] = str(Path(ffmpeg_exe).parent)
 
