@@ -125,13 +125,24 @@ Para obter o token:
 
         self._configure_session(token)
 
+    def _extract_subdomain(self) -> str:
+        """Extracts subdomain from origin_url; falls back to domain name if no subdomain."""
+        if not self.origin_url:
+            return ""
+        parsed = urlparse(self.origin_url)
+        host = parsed.hostname or ""
+        parts = host.split(".")
+        if len(parts) > 2:
+            return parts[0]
+        return parts[0] if parts else ""
+
     def _configure_session(self, token: str) -> None:
         self._session = requests.Session()
         headers = {
             "Authorization": f"Bearer {token}",
             "User-Agent": self._settings.user_agent,
             "Accept": "application/json, text/plain, */*",
-            "subdomain": "aluno",
+            "subdomain": self._extract_subdomain(),
         }
         if self.origin_url:
             headers["Origin"] = self.origin_url
