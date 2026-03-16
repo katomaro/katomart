@@ -152,6 +152,37 @@ Assinantes ativos podem informar usuario/senha para login automatico.
             "Referer": self._site_url + "/",
         })
 
+    def _is_session_expired(self, response: requests.Response) -> bool:
+        """Checks if the response indicates the session has expired (redirected to login)."""
+        if "/users/sign_in" in response.url:
+            return True
+        if "new_user_session" in response.text[:3000] or 'name="user[email]"' in response.text[:5000]:
+            return True
+        return False
+
+    def _re_authenticate(self) -> None:
+        """Re-authenticates using stored credentials via refresh_auth."""
+        logger.info("MemberKit: session expired, re-authenticating...")
+        self.refresh_auth()
+        logger.info("MemberKit: re-authentication successful")
+
+    def _request_with_reauth(self, url: str, **kwargs) -> requests.Response:
+        """Makes a GET request, re-authenticating once if the session has expired."""
+        response = self._session.get(url, **kwargs)
+        response.raise_for_status()
+
+        if self._is_session_expired(response):
+            self._re_authenticate()
+            response = self._session.get(url, **kwargs)
+            response.raise_for_status()
+
+            if self._is_session_expired(response):
+                raise ConnectionError(
+                    f"MemberKit: sessao expirou e re-autenticacao falhou para {url}"
+                )
+
+        return response
+
     def _extract_csrf_token(self, html: str) -> Optional[str]:
         """Extracts the Rails CSRF token from meta tag or hidden input."""
         soup = BeautifulSoup(html, "html.parser")
@@ -173,8 +204,7 @@ Assinantes ativos podem informar usuario/senha para login automatico.
         if not self._session:
             raise ConnectionError("Sessao nao autenticada.")
 
-        response = self._session.get(self._site_url + "/", timeout=30)
-        response.raise_for_status()
+        response = self._request_with_reauth(self._site_url + "/", timeout=30)
 
         soup = BeautifulSoup(response.text, "html.parser")
         courses: List[Dict[str, Any]] = []
@@ -229,8 +259,7 @@ Assinantes ativos podem informar usuario/senha para login automatico.
             logger.debug("MemberKit: fetching course content at %s", url)
 
             try:
-                response = self._session.get(url, timeout=30)
-                response.raise_for_status()
+                response = self._request_with_reauth(url, timeout=30)
             except Exception as exc:
                 logger.error("MemberKit: failed to fetch course %s: %s", course_id, exc)
                 continue
@@ -350,8 +379,7 @@ Assinantes ativos podem informar usuario/senha para login automatico.
         url = f"{self._site_url}/{lesson_slug}"
         logger.debug("MemberKit: fetching lesson at %s", url)
 
-        response = self._session.get(url, timeout=30)
-        response.raise_for_status()
+        response = self._request_with_reauth(url, timeout=30)
 
         soup = BeautifulSoup(response.text, "html.parser")
         content = LessonContent()
