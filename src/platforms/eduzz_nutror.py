@@ -231,42 +231,62 @@ Para autenticação manual (Token Direto, não recomendado, use credenciais se p
             
         return False
 
-    def fetch_courses(self) -> List[Dict[str, Any]]:
+    def _extract_total_pages(self, payload: Dict[str, Any]) -> Optional[int]:
+        """Extracts total pages from Nutror payload when available."""
+        page_info = payload.get("page")
+        total_pages: Optional[int] = None
+
+        if isinstance(page_info, dict):
+            total_pages = page_info.get("total_pages") or page_info.get("pages")
+
+        if total_pages is None:
+            total_pages = payload.get("total_pages") or payload.get("pages")
+
+        try:
+            if total_pages is None:
+                return None
+            total_pages_int = int(total_pages)
+            return total_pages_int if total_pages_int > 0 else None
+        except (TypeError, ValueError):
+            return None
+
+    def _fetch_courses_paginated(self) -> List[Dict[str, Any]]:
         if not self._session:
             raise ConnectionError("Sessão não autenticada.")
 
-        courses = []
+        courses: List[Dict[str, Any]] = []
+        seen_ids: set[str] = set()
         page = 1
         page_size = 50
 
         while True:
-            params = {
+            params: Dict[str, Any] = {
                 "page": page,
                 "size": page_size,
                 "status": "seeAll",
-                "showShelf": "true"
+                "showShelf": "true",
             }
-            
+
             try:
                 response = self._session.get(SEARCH_URL, params=params)
-                
+
                 if response.status_code == 401:
                     raise ConnectionError("Token Inválido (401). Certifique-se de copiar o Token 'Authorization' (Bearer) da aba Rede, e não o Cookie.")
-                
+
                 response.raise_for_status()
                 data = response.json()
-                
+
                 items = data.get("data", [])
-                if not items:
+                if not isinstance(items, list) or not items:
                     break
 
+                page_new_courses = 0
                 for item in items:
                     expire_at = item.get("expire_at")
                     title = item.get("title")
 
                     if expire_at:
                         try:
-                            # Ex: "2022-01-27T11:08:29.000Z"
                             expire_dt = datetime.fromisoformat(expire_at.replace("Z", "+00:00"))
                             if expire_dt < datetime.now(expire_dt.tzinfo):
                                 logger.info(f"Pulando curso expirado: {title} (Expirou em {expire_at})")
@@ -274,25 +294,33 @@ Para autenticação manual (Token Direto, não recomendado, use credenciais se p
                         except Exception as e:
                             logger.warning(f"Erro ao verificar expiração do curso {title}: {e}")
 
-                    course_id = item.get("hash") or item.get("course_hash") or item.get("id")
+                    raw_course_id = item.get("hash") or item.get("course_hash") or item.get("id")
+                    if raw_course_id is None:
+                        continue
+
+                    course_id = str(raw_course_id)
+                    if course_id in seen_ids:
+                        continue
+
                     producer = item.get("author", {}).get("name") or item.get("producer", {}).get("name") or "Desconhecido"
-                    
+
                     courses.append({
-                        "id": str(course_id),
+                        "id": course_id,
                         "name": title,
                         "seller_name": producer,
-                        "slug": str(course_id)
+                        "slug": course_id,
                     })
+                    seen_ids.add(course_id)
+                    page_new_courses += 1
 
-                page_info = data.get("page", {})
-                if isinstance(page_info, dict):
-                    total_pages = page_info.get("total_pages", 1)
-                else:
-                    total_pages = data.get("total_pages", 1)
+                total_pages = self._extract_total_pages(data)
 
-                if page >= total_pages:
+                if total_pages is not None and page >= total_pages:
                     break
-                
+
+                if page_new_courses == 0:
+                    break
+
                 page += 1
                 time.sleep(0.5)
 
@@ -302,6 +330,9 @@ Para autenticação manual (Token Direto, não recomendado, use credenciais se p
                 break
 
         return courses
+
+    def fetch_courses(self) -> List[Dict[str, Any]]:
+        return self._fetch_courses_paginated()
 
     def fetch_course_content(self, courses: List[Dict[str, Any]]) -> Dict[str, Any]:
         if not self._session:
