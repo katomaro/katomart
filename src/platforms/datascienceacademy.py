@@ -1,28 +1,27 @@
 from __future__ import annotations
 
 import logging
-import json
 import re
-from typing import Any, Dict, List
 from pathlib import Path
-from urllib.parse import parse_qs, urljoin, urlparse
+from typing import Any, Dict, List
 
 import requests
-from bs4 import BeautifulSoup
 
 from src.app.api_service import ApiService
 from src.app.models import Attachment, AuxiliaryURL, LessonContent, Video
 from src.config.settings_manager import SettingsManager
 from src.platforms.base import AuthField, BasePlatform, PlatformFactory
 
-COURSES_PAGE_URL = "https://www.datascienceacademy.com.br/start"
-COURSE_CONTENT_URL = "https://www.datascienceacademy.com.br/api/course/{slug}?contents=true&path=player"
-COURSE_CONTENT_FALLBACK_URL = "https://www.datascienceacademy.com.br/api/course/{slug}?contents"
-UNIT_PAGE_URL = "https://www.datascienceacademy.com.br/path-player?courseid={slug}&unit={unit_id}Unit"
+logger = logging.getLogger(__name__)
+
+API_BASE = "https://www.datascienceacademy.com.br"
+PRODUCTS_URL = f"{API_BASE}/api/products_all"
+USER_COURSES_URL = f"{API_BASE}/api/user/courses-progress"
+COURSE_CONTENT_URL = f"{API_BASE}/api/course/{{slug}}?contents"
 
 
 class DataScienceAcademyPlatform(BasePlatform):
-    """Implements the Data Science Academy platform using the shared interface."""
+    """Implements the Data Science Academy (LearnWorlds) platform."""
 
     def __init__(self, api_service: ApiService, settings_manager: SettingsManager) -> None:
         super().__init__(api_service, settings_manager)
@@ -34,13 +33,13 @@ class DataScienceAcademyPlatform(BasePlatform):
     @classmethod
     def auth_instructions(cls) -> str:
         return """
-Assinantes (R$ 9.90) ativos podem informar usuário/senha. O sistema irá trocar essas credenciais automaticamente pelo token da etapa acima, além de usar alguns algoritmos melhores e ter funcionalidades extras na aplicação, e obter suporte prioritário.
+Assinantes (R$ 9.90) ativos podem informar usuario/senha. O sistema ira trocar essas credenciais automaticamente pelo token da etapa acima, alem de usar alguns algoritmos melhores e ter funcionalidades extras na aplicacao, e obter suporte prioritario.
 
 Como obter o token da Data Science Academy?
-1) Abra https://www.datascienceacademy.com.br/start e faça login.
-2) No DevTools (F12) abra a aba Network e atualize a página.
-3) Procure uma requisição para /api/course/<slug> e copie o valor do cabeçalho Authorization.
-4) Cole apenas o token no campo acima ou informe usuário e senha se permitido pela sua licença.
+1) Abra https://www.datascienceacademy.com.br/start e faca login.
+2) No DevTools (F12) abra a aba Network e atualize a pagina.
+3) Procure uma requisicao para /api/course/<slug> ou /api/products_all e copie o valor do cabecalho "Token".
+4) Cole apenas o token no campo acima ou informe usuario e senha se permitido pela sua licenca.
 """.strip()
 
     def authenticate(self, credentials: Dict[str, Any]) -> None:
@@ -49,73 +48,77 @@ Como obter o token da Data Science Academy?
         self._session = requests.Session()
         self._session.headers.update(
             {
-                "Authorization": f"Bearer {token}",
+                "Token": token,
                 "User-Agent": self._settings.user_agent,
                 "Accept": "application/json, text/plain, */*",
-                "Origin": "https://www.datascienceacademy.com.br",
-                "Referer": "https://www.datascienceacademy.com.br/",
+                "Origin": API_BASE,
+                "Referer": f"{API_BASE}/",
             }
         )
 
     def _exchange_credentials_for_token(self, username: str, password: str, credentials: Dict[str, Any]) -> str:
         raise ConnectionError(
-            "A troca automática de credenciais não é suportada para esta plataforma. Use um token válido."
+            "A troca automatica de credenciais nao e suportada para esta plataforma. Use um token valido."
         )
 
     def fetch_courses(self) -> List[Dict[str, Any]]:
         if not self._session:
-            raise ConnectionError("A sessão não está autenticada.")
+            raise ConnectionError("Sessao nao autenticada.")
 
-        response = self._session.get(COURSES_PAGE_URL)
+        response = self._session.get(PRODUCTS_URL, timeout=30)
         response.raise_for_status()
+        data = response.json()
 
-        logging.debug("Data Science Academy courses page length: %s", len(response.text))
+        courses_map = data.get("courses", {})
+        allowed_ids = set(data.get("allowedCourseIds") or [])
 
-        soup = BeautifulSoup(response.text, "html.parser")
-        course_cards = soup.select("a.lw-course-card--stretched-link")
-        courses: Dict[str, Dict[str, Any]] = {}
+        # Fetch user enrollment data (premium/registered) from the dedicated endpoint.
+        # The products_all response does not populate me.premium for bundle-enrolled
+        # courses, so we must call user/courses-progress to get the real enrollment
+        # state.  The LearnWorlds frontend filters accessible courses using the same
+        # logic: me.premium || me.registered  (see getUserCoursesFiltered getter).
+        enrolled_ids: set = set()
+        try:
+            progress_resp = self._session.get(
+                USER_COURSES_URL, timeout=30
+            )
+            progress_resp.raise_for_status()
+            progress_data = progress_resp.json()
+            for uc in progress_data.get("userCourses") or []:
+                uc_me = uc.get("me", {})
+                if uc_me.get("premium") or uc_me.get("registered"):
+                    enrolled_ids.add(str(uc.get("courseId", "")))
+            logger.debug("DSA: courses-progress returned %d enrolled courses", len(enrolled_ids))
+        except Exception as exc:
+            logger.warning("DSA: failed to fetch user courses-progress: %s", exc)
 
-        for card in course_cards:
-            href = card.get("href") or ""
-            slug = self._extract_slug_from_href(href)
-            if not slug:
+        courses: List[Dict[str, Any]] = []
+
+        for cid, course in courses_map.items():
+            me = course.get("me", {})
+            course_id = str(course.get("id", cid))
+            is_registered = me.get("registered")
+            is_allowed = course_id in allowed_ids or cid in allowed_ids
+            is_free = course.get("status") == "free"
+            is_enrolled = course_id in enrolled_ids
+            if not is_registered and not is_allowed and not is_free and not is_enrolled:
                 continue
 
-            name = self._extract_course_title(card) or slug.replace("-", " ").replace("_", " ").title()
-            courses[slug] = {
-                "id": slug,
-                "name": name,
-                "seller_name": "Data Science Academy",
-                "slug": slug,
-            }
+            courses.append(
+                {
+                    "id": course.get("id", cid),
+                    "name": course.get("title", "Curso"),
+                    "slug": course.get("titleId", cid),
+                    "seller_name": "Data Science Academy",
+                }
+            )
 
-        return sorted(courses.values(), key=lambda c: c.get("name", ""))
-
-    def _extract_slug_from_href(self, href: str) -> str:
-        if not href:
-            return ""
-        if "=" in href:
-            return href.split("=")[-1]
-        parsed = urlparse(href)
-        if parsed.query:
-            query = parse_qs(parsed.query)
-            course_id = query.get("courseid") or query.get("course")
-            if course_id:
-                return course_id[0]
-        return href.rstrip("/").split("/")[-1]
-
-    def _extract_course_title(self, anchor: Any) -> str:
-        parent = anchor.find_parent("div", class_=re.compile("lw-course-card"))
-        if not parent:
-            return ""
-        title_el = parent.find(["h3", "h4", "div"], class_=re.compile("title|course-title")) or parent.find(["h3", "h4"])
-        if title_el:
-            return title_el.get_text(strip=True)
-        return ""
+        logger.debug("DSA: found %d accessible courses", len(courses))
+        return sorted(courses, key=lambda c: c.get("name", ""))
 
     def fetch_course_content(self, courses: List[Dict[str, Any]]) -> Dict[str, Any]:
         if not self._session:
-            raise ConnectionError("A sessão não está autenticada.")
+            raise ConnectionError("Sessao nao autenticada.")
 
         content: Dict[str, Any] = {}
 
@@ -124,59 +127,86 @@ Como obter o token da Data Science Academy?
             if not slug:
                 continue
 
-            course_json = self._get_course_json(slug)
-            logging.debug("Data Science Academy course %s payload: %s", slug, course_json)
-            modules = self._extract_sections(course_json)
+            try:
+                resp = self._session.get(COURSE_CONTENT_URL.format(slug=slug), timeout=60)
+                resp.raise_for_status()
+                course_json = resp.json()
+            except Exception as exc:
+                logger.error("DSA: failed to fetch course %s: %s", slug, exc)
+                continue
+
+            course_data = course_json.get("course", course_json)
+            modules = self._extract_sections(course_data)
 
             course_entry = course.copy()
-            course_entry["title"] = course.get("name", "Curso")
+            course_entry["title"] = course_data.get("title", course.get("name", "Curso"))
             course_entry["modules"] = modules
             content[str(slug)] = course_entry
 
         return content
 
-    def _get_course_json(self, slug: str) -> Dict[str, Any]:
-        assert self._session
-        primary = self._session.get(COURSE_CONTENT_URL.format(slug=slug))
-        if primary.ok:
-            payload = primary.json()
-            logging.debug("Data Science Academy primary course response for %s: %s", slug, payload)
-            return payload
+    def _extract_sections(self, course_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        sections = course_data.get("sections", {})
+        videos = course_data.get("videos", {})
+        objects = course_data.get("objects", {})
 
-        fallback = self._session.get(COURSE_CONTENT_FALLBACK_URL.format(slug=slug))
-        fallback.raise_for_status()
-        payload = fallback.json()
-        logging.debug("Data Science Academy fallback course response for %s: %s", slug, payload)
-        return payload
+        if isinstance(sections, dict):
+            sections_list = list(sections.values())
+        elif isinstance(sections, list):
+            sections_list = sections
+        else:
+            sections_list = []
 
-    def _extract_sections(self, course_json: Dict[str, Any]) -> List[Dict[str, Any]]:
-        sections = self._collect_sections(course_json)
         modules: List[Dict[str, Any]] = []
 
-        for section_index, section in enumerate(sections, start=1):
-            raw_title = section.get("titles") or section.get("title")
-            section_title = self._resolve_title(raw_title, f"Módulo {section_index}")
+        for section_index, section in enumerate(sections_list, start=1):
+            if not isinstance(section, dict):
+                continue
+
+            title = self._resolve_title(
+                section.get("titles") or section.get("title"),
+                f"Modulo {section_index}",
+            )
             learning_path = section.get("learningPath") or []
 
             lessons: List[Dict[str, Any]] = []
             for lesson_index, item in enumerate(learning_path, start=1):
-                lesson_id = str(item.get("id") or f"{section_index}-{lesson_index}")
-                lesson_type = (item.get("type") or "").lower()
-                lesson_title = self._resolve_title(item.get("titles"), f"Aula {lesson_index}")
-                lessons.append(
-                    {
-                        "id": lesson_id,
-                        "title": lesson_title,
-                        "order": lesson_index,
-                        "locked": False,
-                        "item_type": lesson_type,
-                    }
-                )
+                unit_id = str(item.get("id") or f"{section_index}-{lesson_index}")
+                unit_type = (item.get("type") or "").lower()
+
+                lesson_title = ""
+                if unit_type in ("ivideo", "video") and unit_id in videos:
+                    lesson_title = videos[unit_id].get("title", "")
+                elif unit_id in objects:
+                    lesson_title = objects[unit_id].get("title", "")
+
+                if not lesson_title or lesson_title == "Untitled":
+                    lesson_title = self._resolve_title(
+                        item.get("titles") or item.get("unitTitle"),
+                        f"Aula {lesson_index}",
+                    )
+
+                lesson_data: Dict[str, Any] = {
+                    "id": unit_id,
+                    "title": lesson_title,
+                    "order": lesson_index,
+                    "locked": False,
+                    "item_type": unit_type,
+                }
+
+                if unit_type in ("ivideo", "video") and unit_id in videos:
+                    vid = videos[unit_id]
+                    lesson_data["vimeoid"] = vid.get("vimeoid", "")
+                    lesson_data["duration"] = vid.get("duration", 0)
+                elif unit_id in objects:
+                    lesson_data["object_data"] = objects[unit_id].get("data", {})
+
+                lessons.append(lesson_data)
 
             modules.append(
                 {
-                    "id": str(section.get("id") or section_index),
-                    "title": section_title,
+                    "id": str(section.get("titleId") or section.get("id") or section_index),
+                    "title": title,
                     "order": section_index,
                     "lessons": lessons,
                     "locked": False,
@@ -184,31 +214,6 @@ Como obter o token da Data Science Academy?
             )
 
         return modules
-
-    def _collect_sections(self, node: Any) -> List[Dict[str, Any]]:
-        collected: List[List[Dict[str, Any]]] = []
-
-        def recursive(value: Any) -> None:
-            if isinstance(value, dict):
-                for key, item in value.items():
-                    if key.lower() == "sections":
-                        if isinstance(item, list):
-                            collected.append(item)
-                        elif isinstance(item, dict):
-                            collected.append([v for v in item.values() if isinstance(v, dict)])
-                    recursive(item)
-            elif isinstance(value, list):
-                for entry in value:
-                    recursive(entry)
-
-        recursive(node)
-
-        flattened: List[Dict[str, Any]] = []
-        for section_list in collected:
-            for section in section_list:
-                if isinstance(section, dict):
-                    flattened.append(section)
-        return flattened
 
     def _resolve_title(self, raw_title: Any, fallback: str) -> str:
         if isinstance(raw_title, dict):
@@ -226,35 +231,33 @@ Como obter o token da Data Science Academy?
             return raw_title.strip()
         return fallback
 
-    def fetch_lesson_details(self, lesson: Dict[str, Any], course_slug: str, course_id: str, module_id: str) -> LessonContent:
-        if not self._session:
-            raise ConnectionError("A sessão não está autenticada.")
-
+    def fetch_lesson_details(
+        self, lesson: Dict[str, Any], course_slug: str, course_id: str, module_id: str
+    ) -> LessonContent:
+        content = LessonContent()
         unit_id = str(lesson.get("id"))
         unit_type = (lesson.get("item_type") or "").lower()
         order = lesson.get("order", 1)
+        title = lesson.get("title", f"Aula {order}")
 
-        html = self._fetch_unit_html(course_slug, unit_id)
-        logging.debug("Data Science Academy unit %s html length: %s", unit_id, len(html))
-        title = self._extract_title_from_html(html) or lesson.get("title", f"Aula {order}")
-
-        content = LessonContent()
-
-        if unit_type in {"ivideo", "video"}:
-            video_url = self._extract_video_url(html)
-            if video_url:
+        if unit_type in ("ivideo", "video"):
+            vimeoid = lesson.get("vimeoid", "")
+            if vimeoid:
                 content.videos.append(
                     Video(
-                        video_id=unit_id,
-                        url=video_url,
+                        video_id=vimeoid,
+                        url=f"https://player.vimeo.com/video/{vimeoid}",
                         order=order,
                         title=title,
                         size=0,
-                        duration=0,
+                        duration=lesson.get("duration", 0) or 0,
                     )
                 )
+
         elif unit_type == "youtube":
-            yt_url = self._extract_youtube_url(html)
+            obj_data = lesson.get("object_data", {})
+            embed = obj_data.get("embed", "")
+            yt_url = self._extract_url_from_embed(embed)
             if yt_url:
                 content.videos.append(
                     Video(
@@ -266,11 +269,13 @@ Como obter o token da Data Science Academy?
                         duration=0,
                     )
                 )
+
         elif unit_type == "pdf":
-            pdf_url = self._extract_pdf_url(html)
+            obj_data = lesson.get("object_data", {})
+            pdf_url = obj_data.get("pdf_full", "")
             if pdf_url:
-                filename = pdf_url.split("/")[-1] or f"{unit_id}.pdf"
-                extension = filename.split(".")[-1] if "." in filename else "pdf"
+                filename = obj_data.get("pdf_name", f"{unit_id}.pdf")
+                extension = filename.rsplit(".", 1)[-1] if "." in filename else "pdf"
                 content.attachments.append(
                     Attachment(
                         attachment_id=unit_id,
@@ -281,133 +286,59 @@ Como obter o token da Data Science Academy?
                         size=0,
                     )
                 )
+
         elif unit_type == "url":
-            external_url = self._extract_external_url(html)
-            if external_url:
+            obj_data = lesson.get("object_data", {})
+            link = obj_data.get("link", "")
+            if link:
                 content.auxiliary_urls.append(
                     AuxiliaryURL(
                         url_id=unit_id,
-                        url=external_url,
+                        url=link,
                         order=order,
                         title=title,
-                        description=external_url,
+                        description=link,
                     )
                 )
+
         elif unit_type == "pbebook":
-            page_url = self._extract_external_url(html)
-            if page_url:
+            obj_data = lesson.get("object_data", {})
+            page_slug = obj_data.get("pageSlug", "")
+            if page_slug:
                 content.auxiliary_urls.append(
                     AuxiliaryURL(
                         url_id=unit_id,
-                        url=page_url,
+                        url=f"{API_BASE}/ebook/{page_slug}",
                         order=order,
                         title=title,
-                        description=page_url,
+                        description="eBook",
                     )
                 )
 
         return content
 
-    def _fetch_unit_html(self, slug: str, unit_id: str) -> str:
-        assert self._session
-        url = UNIT_PAGE_URL.format(slug=slug, unit_id=unit_id)
-        response = self._session.get(url)
-        response.raise_for_status()
-        return response.text
-
-    def _extract_title_from_html(self, html: str) -> str:
-        soup = BeautifulSoup(html, "html.parser")
-        title_el = soup.find("title")
-        if not title_el or not title_el.text:
+    @staticmethod
+    def _extract_url_from_embed(embed_html: str) -> str:
+        if not embed_html:
             return ""
-        title = title_el.text.replace(" - Data Science Academy", "").replace(" | Data Science Academy", "").strip()
-        return title
-
-    def _extract_video_url(self, html: str) -> str:
-        match = re.search(r'"avc_url"\s*:\s*"([^"]+)"', html)
-        if match:
-            return match.group(1)
-
-        soup = BeautifulSoup(html, "html.parser")
-        script_tags = soup.find_all("script")
-        for script in script_tags:
-            if not script.string:
-                continue
-            if "playerConfig" not in script.string:
-                continue
-            json_match = re.search(r"window\\.playerConfig\\s*=\\s*({.*?})", script.string, flags=re.DOTALL)
-            if not json_match:
-                continue
-            try:
-                data = json.loads(json_match.group(1))
-                cdns = data.get("request", {}).get("files", {}).get("hls", {}).get("cdns", {})
-                akfire = cdns.get("akfire_interconnect_quic", {})
-                avc_url = akfire.get("avc_url")
-                if avc_url:
-                    return avc_url
-            except json.JSONDecodeError:
-                continue
-        return ""
-
-    def _extract_youtube_url(self, html: str) -> str:
-        soup = BeautifulSoup(html, "html.parser")
-        iframe = soup.find("iframe", src=re.compile(r"youtube|youtu\.be", re.I))
-        if iframe and iframe.get("src"):
-            return self._normalize_url(iframe.get("src"))
-        return ""
-
-    def _extract_pdf_url(self, html: str) -> str:
-        soup = BeautifulSoup(html, "html.parser")
-        iframe = soup.find("iframe", id="playerFrame") or soup.find("iframe", attrs={"name": "playerFrame"})
-        if iframe and iframe.get("src"):
-            src = iframe.get("src")
-            parsed = urlparse(src)
-            file_param = parse_qs(parsed.query).get("file", [""])[0]
-            if file_param:
-                return self._normalize_url(file_param)
-            return self._normalize_url(src)
-        link = soup.find("a", href=re.compile(r"\.pdf($|\?)", re.I))
-        if link and link.get("href"):
-            return self._normalize_url(link.get("href"))
-        file_match = re.search(r"file=([^&\"]+)", html)
-        if file_match:
-            return self._normalize_url(file_match.group(1))
-        return ""
-
-    def _extract_external_url(self, html: str) -> str:
-        soup = BeautifulSoup(html, "html.parser")
-        iframe = soup.find("iframe", id="iframePage")
-        if iframe and iframe.get("src"):
-            return self._normalize_url(iframe.get("src"))
-        generic_iframe = soup.find("iframe")
-        if generic_iframe and generic_iframe.get("src"):
-            return self._normalize_url(generic_iframe.get("src"))
-        return ""
-
-    def _normalize_url(self, url: str) -> str:
-        if not url:
-            return ""
-        if url.startswith("//"):
-            return "https:" + url
-        if url.startswith("/"):
-            return urljoin("https://www.datascienceacademy.com.br", url)
-        return url
+        match = re.search(r'src=["\']([^"\']+)["\']', embed_html)
+        return match.group(1) if match else ""
 
     def download_attachment(
         self, attachment: Attachment, download_path: Path, course_slug: str, course_id: str, module_id: str
     ) -> bool:
         if not self._session:
-            raise ConnectionError("A sessão não está autenticada.")
+            raise ConnectionError("Sessao nao autenticada.")
 
         if not attachment.url:
             return False
 
-        response = self._session.get(attachment.url, stream=True)
+        response = self._session.get(attachment.url, stream=True, timeout=120)
         response.raise_for_status()
 
-        with open(download_path, "wb") as file_handle:
+        with open(download_path, "wb") as f:
             for chunk in response.iter_content(chunk_size=8192):
-                file_handle.write(chunk)
+                f.write(chunk)
 
         return True
 
