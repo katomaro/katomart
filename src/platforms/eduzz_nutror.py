@@ -412,9 +412,8 @@ Para autenticação manual (Token Direto, não recomendado, use credenciais se p
             type_id = item.get("type", {}).get("id")
             video_url = None
 
-            # Type 1: YouTube URL in content field
             if type_id == 1:
-                video_url = item.get("content") or item.get("embed")
+                video_url = item.get("embed") or item.get("content")
                 if video_url:
                     logger.debug(f"Nutror: YouTube video found: {video_url}")
 
@@ -439,7 +438,8 @@ Para autenticação manual (Token Direto, não recomendado, use credenciais se p
                     title=lesson_data.get("title") or f"Video {video_idx}",
                     order=item.get("sequence", video_idx),
                     size=0,
-                    duration=0
+                    duration=0,
+                    extra_props={"referer": "https://app.nutror.com/"},
                 ))
                 video_idx += 1
 
