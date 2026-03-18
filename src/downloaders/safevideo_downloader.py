@@ -73,25 +73,7 @@ class SafeVideoDownloader(BaseDownloader):
                 **retry_opts,
             }
 
-            if getattr(settings, 'keep_audio_only', False):
-                ydl_opts['format'] = 'bestaudio/best'
-                ydl_opts['postprocessors'] = [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': 'mp3',
-                    'preferredquality': '192',
-                }]
-            else:
-                quality = getattr(settings, 'video_quality', 'highest')
-                if quality == "Mais alta" or quality == "highest":
-                    ydl_opts['format'] = 'bestvideo+bestaudio/best'
-                elif quality == "Mais baixa" or quality == "lowest":
-                    ydl_opts['format'] = 'worstvideo+bestaudio/worst'
-                else:
-                    try:
-                        target_height = int(str(quality).replace('p', ''))
-                        ydl_opts['format'] = f"bestvideo[height<={target_height}]+bestaudio/best[height<={target_height}]"
-                    except Exception:
-                        ydl_opts['format'] = 'bestvideo+bestaudio/best'
+            ydl_opts.update(self.build_quality_opts(settings))
 
             if settings.ffmpeg_path:
                 ydl_opts['ffmpeg_location'] = settings.ffmpeg_path

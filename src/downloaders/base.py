@@ -18,6 +18,38 @@ class BaseDownloader(ABC):
         """
         self.settings_manager = settings_manager
 
+    @staticmethod
+    def build_quality_opts(settings) -> dict:
+        """Build yt-dlp format/postprocessor options based on quality settings."""
+        opts: dict = {}
+
+        if getattr(settings, 'keep_audio_only', False):
+            opts['format'] = 'bestaudio/best'
+            opts['postprocessors'] = [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }]
+            return opts
+
+        quality = getattr(settings, 'video_quality', 'Mais alta')
+        if quality in ("Mais alta", "highest"):
+            opts['format'] = 'bestvideo+bestaudio/best'
+        elif quality in ("Mais baixa", "lowest"):
+            opts['format'] = 'worstvideo+bestaudio/worst'
+        else:
+            try:
+                target_height = int(str(quality).replace('p', ''))
+                opts['format'] = (
+                    f"bestvideo[height<={target_height}]+bestaudio"
+                    f"/best[height<={target_height}]"
+                    f"/worstvideo+bestaudio/worst"
+                )
+            except (ValueError, AttributeError):
+                opts['format'] = 'bestvideo+bestaudio/best'
+
+        return opts
+
     @abstractmethod
     def download_video(self, url: str, session: requests.Session, download_path: Path, extra_props: dict = None) -> bool:
         """

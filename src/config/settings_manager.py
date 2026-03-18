@@ -10,7 +10,7 @@ from typing import Any, Dict
 class AppSettings:
     """A dataclass to hold application settings for type safety."""
     download_path: str = "./downloads"
-    video_quality: str = "highest"
+    video_quality: str = "Mais alta"
     max_concurrent_segment_downloads: int = 1
     timeout_seconds: int = 30
     download_subtitles: bool = True

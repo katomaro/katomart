@@ -396,21 +396,7 @@ class UdemyDownloader(BaseDownloader):
             **retry_opts,
         }
 
-        quality = self.settings.video_quality
-        if quality and quality not in ("highest", "best"):
-            try:
-                target_height = int(str(quality).replace("p", "").strip())
-                ydl_opts['format'] = f"bestvideo[height<={target_height}]+bestaudio/best[height<={target_height}]"
-            except ValueError:
-                pass
-
-        if self.settings.keep_audio_only:
-            ydl_opts['format'] = 'bestaudio/best'
-            ydl_opts['postprocessors'] = [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }]
+        ydl_opts.update(self.build_quality_opts(self.settings))
 
         if self.settings.download_subtitles:
             ydl_opts['writesubtitles'] = True
