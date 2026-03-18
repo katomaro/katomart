@@ -204,9 +204,14 @@ Para plataformas whitelabel Curseduca:
 
     def authenticate(self, credentials: Dict[str, Any]) -> None:
         self.credentials = credentials
-        base_url = (credentials.get("base_url") or "").rstrip("/")
-        if not base_url:
+        raw_url = (credentials.get("base_url") or "").strip().rstrip("/")
+        if not raw_url:
             raise ValueError("Informe a URL base da plataforma Curseduca.")
+
+        parsed = urlparse(raw_url)
+        if not parsed.scheme or not parsed.netloc:
+            raise ValueError("URL inválida. Informe no formato https://portal.suaescola.com.br")
+        base_url = f"{parsed.scheme}://{parsed.netloc}"
 
         self._base_url = base_url
         self._session = requests.Session()
@@ -236,6 +241,9 @@ Para plataformas whitelabel Curseduca:
             self._tenant_uuid = (credentials.get("tenant_uuid") or "").strip()
             self._tenant_id = str(credentials.get("tenant_id") or "")
             self._current_login_id = (credentials.get("current_login_id") or "").strip()
+
+            self._resolve_token_context(headers)
+
             self._configure_cookies(base_url)
             logging.info("Sessão autenticada na Curseduca via token.")
             return
@@ -268,12 +276,98 @@ Para plataformas whitelabel Curseduca:
         self._tenant_slug = tenant.get("slug", "")
         self._tenant_uuid = tenant.get("uuid", "")
         self._tenant_id = str(tenant.get("id", ""))
-        self._current_login_id = auth_data.get("currentLoginId", "")
+        self._current_login_id = str(auth_data.get("currentLoginId", ""))
         self._auth_id = str(auth_data.get("authenticationId", ""))
-        self._member_data = member
+        self._member_data = {
+            "id": member.get("id"),
+            "name": member.get("name", ""),
+            "email": member.get("email", ""),
+            "image": member.get("image"),
+            "isAdmin": member.get("isAdmin", False),
+        }
+
+        # If the login response didn't include tenant info, resolve from API
+        if not self._tenant_uuid:
+            logging.info("Curseduca: tenant info missing from login response, resolving from API...")
+            self._resolve_token_context(headers)
 
         self._configure_cookies(base_url)
         logging.info("Sessão autenticada na Curseduca.")
+
+    def _resolve_token_context(self, base_headers: Dict[str, str]) -> None:
+        """Populate tenant and member data from API when authenticating via token."""
+        auth_headers = base_headers | {
+            "Authorization": f"Bearer {self._access_token}",
+            "api_key": self._api_key,
+        }
+
+        # Fetch user profile for the 'user' cookie
+        if not self._member_data:
+            try:
+                me_resp = self._session.get(
+                    "https://prof.curseduca.pro/me",
+                    headers=auth_headers, params={"skipCache": "true"}, timeout=30,
+                )
+                me_resp.raise_for_status()
+                me = me_resp.json()
+                self._member_data = {
+                    "id": me.get("id"),
+                    "name": me.get("name", ""),
+                    "email": me.get("email", ""),
+                    "image": me.get("image"),
+                    "isAdmin": False,
+                }
+                self._auth_id = str(me.get("id", ""))
+                logging.debug("Curseduca /me profile resolved: id=%s", me.get("id"))
+            except Exception as exc:
+                logging.warning("Curseduca: falha ao buscar perfil /me: %s", exc)
+
+        # Resolve tenant info from groups if not already provided
+        if self._tenant_uuid:
+            return
+
+        try:
+            groups_resp = self._session.get(
+                "https://prof.curseduca.pro/me/groups",
+                headers=auth_headers, timeout=30,
+            )
+            groups_resp.raise_for_status()
+            groups_data = groups_resp.json()
+
+            tenant_uuid = ""
+            tenant_id = ""
+            for group in groups_data.get("groups", []):
+                for tenant in group.get("tenants", []):
+                    if tenant.get("uuid"):
+                        tenant_uuid = tenant["uuid"]
+                        tenant_id = str(tenant.get("id", ""))
+                        break
+                if tenant_uuid:
+                    break
+
+            if not tenant_uuid:
+                logging.warning("Curseduca: nenhum tenant encontrado nos grupos do usuário")
+                return
+
+            self._tenant_uuid = tenant_uuid
+            self._tenant_id = tenant_id
+
+            # Resolve tenant slug via /by/tenants
+            tenants_resp = self._session.get(
+                "https://application.curseduca.pro/by/tenants",
+                headers=auth_headers,
+                params={"id": "", "slug": "", "uuid": tenant_uuid},
+                timeout=30,
+            )
+            tenants_resp.raise_for_status()
+            tenant_data = tenants_resp.json()
+            self._tenant_slug = tenant_data.get("slug", "")
+            logging.info(
+                "Curseduca tenant resolved: slug=%s, uuid=%s, id=%s",
+                self._tenant_slug, self._tenant_uuid, self._tenant_id,
+            )
+        except Exception as exc:
+            logging.warning("Curseduca: falha ao resolver tenant: %s", exc)
 
     def _configure_cookies(self, base_url: str) -> None:
         domain = urlparse(base_url).netloc
@@ -373,7 +467,7 @@ Para plataformas whitelabel Curseduca:
             if not course_url:
                 continue
 
-            logging.debug("Curseduca cookies before request: %s", dict(self._session.cookies))
+            logging.debug("Curseduca cookies before request: %s", {c.name: c.value for c in self._session.cookies})
             response = self._session.get(course_url, headers=headers)
             logging.info("Curseduca course page response: status=%s, url=%s, final_url=%s",
                         response.status_code, course_url, response.url)
