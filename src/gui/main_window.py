@@ -3,7 +3,7 @@ import logging
 from pathlib import Path
 from typing import Any
 from PySide6.QtCore import QThreadPool, QTimer
-from PySide6.QtWidgets import QMainWindow, QWidget, QStackedWidget, QTabWidget, QMessageBox
+from PySide6.QtWidgets import QMainWindow, QWidget, QStackedWidget, QTabWidget, QMessageBox, QPushButton, QInputDialog, QLineEdit
 
 from src.config.settings_manager import SettingsManager
 from src.config.version import BUILD_NUMBER, VERSION_FILE_URL
@@ -32,6 +32,8 @@ class MainWindow(QMainWindow):
         self._platform_name: str | None = None
         self._selected_courses: list = []
         self._resume_state: dict | None = None
+        self._current_worker: DownloadWorker | None = None
+        self._retry_selection_json: str | None = None
         self._thread_pool = QThreadPool()
 
         self._stacked_widget = QStackedWidget()
@@ -79,6 +81,12 @@ class MainWindow(QMainWindow):
         self.module_selection_view.download_requested.connect(self._start_download)
         self.settings_view.membership_updated.connect(self.auth_view.refresh_membership_state)
         self.course_selection_view.search_requested.connect(self._search_courses)
+        self.progress_view.pause_requested.connect(self._on_pause_download)
+        self.progress_view.resume_requested.connect(self._on_resume_download)
+        self.progress_view.save_progress_requested.connect(self._on_save_progress)
+        self.progress_view.cancel_requested.connect(self._on_cancel_download)
+        self.progress_view.reauth_requested.connect(self._on_reauth_requested)
+        self.progress_view.retry_requested.connect(self._on_retry_requested)
 
     def _start_version_check(self) -> None:
         """Starts an asynchronous check for the latest build on GitHub."""
@@ -240,14 +248,18 @@ class MainWindow(QMainWindow):
             return
 
         selection = json.loads(selection_json)
-            
+
+        self.progress_view.reset()
         self._stacked_widget.setCurrentWidget(self.progress_view)
+        self.progress_view.set_download_active(True)
         if resume_state:
-            self.progress_view.log_message("Retomando downloads da sessão anterior...")
+            self.progress_view.log_message("Retomando downloads da sessao anterior...")
         else:
             self.progress_view.log_message("Iniciando download...")
 
-        download_dir = self._settings_manager.get_settings().download_path
+        settings = self._settings_manager.get_settings()
+        self.progress_view.set_premium(settings.has_full_permissions)
+        download_dir = settings.download_path
         worker = DownloadWorker(
             self._platform,
             selection,
@@ -257,21 +269,148 @@ class MainWindow(QMainWindow):
             self._selected_courses,
             resume_state,
         )
+        if self._current_worker:
+            self._disconnect_worker(self._current_worker)
+        self._current_worker = worker
         worker.signals.progress.connect(self.progress_view.set_progress)
         worker.signals.result.connect(self.progress_view.log_message)
         worker.signals.error.connect(self._handle_worker_error)
         worker.signals.request_auth_confirmation.connect(self._handle_auth_confirmation_request)
-        worker.signals.finished.connect(lambda: self.progress_view.log_message("Worker finished."))
+        worker.signals.lesson_status.connect(self.progress_view.update_lesson_status)
+        worker.signals.auto_paused.connect(self._on_auto_paused)
+        worker.signals.retry_selection.connect(self._on_retry_selection_received)
+        worker.signals.finished.connect(self._on_download_finished)
         self._thread_pool.start(worker)
 
     def _handle_auth_confirmation_request(self, confirmation_event: Any) -> None:
         """Handles a request from the worker to confirm manual authentication."""
         QMessageBox.information(
             self,
-            "Re-autenticação Necessária",
-            "A sessão expirou e o sistema está tentando re-autenticar.\n"
-            "Uma janela do navegador foi aberta (ou será aberta).\n"
+            "Re-autenticacao Necessaria",
+            "A sessao expirou e o sistema esta tentando re-autenticar.\n"
+            "Uma janela do navegador foi aberta (ou sera aberta).\n"
             "Por favor, realize o login/captcha manualmente no navegador e clique em OK aqui quando terminar."
         )
         if confirmation_event:
             confirmation_event.set()
+
+    def _disconnect_worker(self, worker: DownloadWorker) -> None:
+        """Disconnect all signals from a worker to prevent stale callbacks."""
+        for sig, slot in [
+            (worker.signals.progress, self.progress_view.set_progress),
+            (worker.signals.result, self.progress_view.log_message),
+            (worker.signals.error, self._handle_worker_error),
+            (worker.signals.lesson_status, self.progress_view.update_lesson_status),
+            (worker.signals.auto_paused, self._on_auto_paused),
+            (worker.signals.retry_selection, self._on_retry_selection_received),
+            (worker.signals.finished, self._on_download_finished),
+            (worker.signals.request_auth_confirmation, self._handle_auth_confirmation_request),
+        ]:
+            try:
+                sig.disconnect(slot)
+            except RuntimeError:
+                pass
+
+    def _on_download_finished(self) -> None:
+        """Called when the download worker finishes (success or cancel)."""
+        self._current_worker = None
+        self.progress_view.set_download_active(False)
+        self.progress_view.log_message("Worker finalizado.")
+
+    def _on_auto_paused(self) -> None:
+        """Called when the worker auto-pauses due to error/partial thresholds."""
+        self.progress_view._paused = True
+        self.progress_view.pause_button.setText("Retomar")
+
+    def _on_pause_download(self) -> None:
+        if self._current_worker:
+            self._current_worker.pause()
+            self.progress_view.log_message("Download pausado.")
+
+    def _on_resume_download(self) -> None:
+        if self._current_worker:
+            self._current_worker.resume()
+            self.progress_view.log_message("Download retomado.")
+
+    def _on_save_progress(self) -> None:
+        if self._current_worker:
+            self._current_worker.request_save_progress()
+
+    def _on_cancel_download(self) -> None:
+        if self._current_worker:
+            reply = QMessageBox.question(
+                self,
+                "Cancelar Download",
+                "Deseja cancelar o download?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                worker = self._current_worker
+                self._current_worker = None
+                self._disconnect_worker(worker)
+                worker.cancel()
+                self._stacked_widget.setCurrentWidget(self.auth_tab_widget)
+        else:
+            self._stacked_widget.setCurrentWidget(self.auth_tab_widget)
+
+    def _on_reauth_requested(self) -> None:
+        """Re-authenticate on the platform. If token-only, ask for a new token."""
+        if not self._current_worker or not self._platform:
+            return
+
+        was_paused = not self._current_worker._pause_event.is_set()
+        if not was_paused:
+            self._current_worker.pause()
+            self.progress_view.log_message("Download pausado para reautenticacao...")
+
+        creds = self._platform.credentials
+        is_token_only = bool(creds.get("token")) and not creds.get("username")
+
+        if is_token_only:
+            new_token, ok = QInputDialog.getText(
+                self,
+                "Novo Token",
+                "Digite o novo token de acesso:",
+                QLineEdit.EchoMode.Normal,
+                creds.get("token", ""),
+            )
+            if not ok or not new_token.strip():
+                self.progress_view.log_message("Reautenticacao cancelada pelo usuario.")
+                if not was_paused:
+                    self._current_worker.resume()
+                return
+            creds["token"] = new_token.strip()
+
+        try:
+            self._platform.authenticate(creds)
+            self.progress_view.log_message("Reautenticacao realizada com sucesso.")
+        except Exception as e:
+            logging.error(f"Falha na reautenticacao: {e}", exc_info=True)
+            QMessageBox.critical(
+                self, "Erro na reautenticacao", f"Falha ao reautenticar: {e}"
+            )
+
+        if not was_paused:
+            self._current_worker.resume()
+
+    def _on_retry_selection_received(self, selection_json: str) -> None:
+        """Stores the retry selection and enables the retry button."""
+        self._retry_selection_json = selection_json
+        if not self.progress_view._is_premium:
+            return
+        selection = json.loads(selection_json)
+        has_retryable = any(
+            any(
+                lesson.get("download", False)
+                for module in course.get("modules", [])
+                for lesson in module.get("lessons", [])
+            )
+            for course in selection.get("courses", [])
+        )
+        self.progress_view.retry_button.setEnabled(has_retryable)
+
+    def _on_retry_requested(self) -> None:
+        """Starts a new download with only the failed/partial lessons."""
+        if not self._retry_selection_json:
+            return
+        self._start_download(self._retry_selection_json)

@@ -2,6 +2,7 @@ import json
 import logging
 import re
 import subprocess
+import threading
 import time
 import shutil
 import html
@@ -17,6 +18,7 @@ from src.platforms.base import BasePlatform
 from src.config.settings_manager import SettingsManager
 from src.downloaders.factory import DownloaderFactory
 from src.utils.resume_manager import ResumeManager
+from src.app.models import ItemDownloadResult, LessonDownloadReport
 
 from src.utils.filesystem import sanitize_path_component
 from src.utils.filesystem import truncate_component, truncate_filename_preserve_ext, get_executable_path
@@ -36,6 +38,10 @@ class WorkerSignals(QObject):
     result = Signal(str)
     progress = Signal(int)
     request_auth_confirmation = Signal(object)
+    download_report = Signal(list)
+    lesson_status = Signal(str)
+    auto_paused = Signal()
+    retry_selection = Signal(str)
 
 
 class FetchCoursesWorker(QRunnable):
@@ -139,6 +145,15 @@ class DownloadWorker(QRunnable):
         self.resume_manager: ResumeManager | None = None
         self.resume_state: Dict[str, Any] | None = None
 
+        self._download_report: List[LessonDownloadReport] = []
+        self._pause_event = threading.Event()
+        self._pause_event.set()
+        self._cancelled = False
+        self._save_requested = False
+        self._partial_count = 0
+        self._error_count = 0
+        self._retry_lessons: set = set()
+
         if getattr(self.settings, "create_resume_summary", False):
             self.resume_manager = ResumeManager(self.download_dir)
             self.resume_state = resume_state
@@ -174,26 +189,28 @@ class DownloadWorker(QRunnable):
                 is_last_attempt = attempt >= self._retry_attempts
 
                 if is_last_attempt:
-                    if getattr(self.settings, "auto_reauth_on_error", False) and e.response.status_code in (400, 401):
-                        creds = getattr(self.platform, 'credentials', {})
-                        if creds and not creds.get("token"):
-                            logging.warning(f"{description}: Erro {e.response.status_code} após esgotar tentativas. Tentando re-autenticação automática...")
-
-                            confirmation_event = creds.get("manual_auth_confirmation")
+                    status_code = e.response.status_code if e.response is not None else None
+                    if getattr(self.settings, "auto_reauth_on_error", False) and status_code in (400, 401):
+                        logging.warning(
+                            f"{description}: Erro {status_code} apos esgotar tentativas. "
+                            "Tentando re-autenticacao automatica..."
+                        )
+                        try:
+                            creds = getattr(self.platform, 'credentials', {})
+                            confirmation_event = creds.get("manual_auth_confirmation") if creds else None
                             if confirmation_event:
                                 confirmation_event.clear()
                                 self.signals.request_auth_confirmation.emit(confirmation_event)
 
-                            try:
-                                self.platform.refresh_auth()
-                                logging.info("Re-autenticação bem sucedida. Tentando operação uma última vez...")
-                                result = func()
-                                if treat_false_as_failure and result is False:
-                                    raise RuntimeError(f"{description} retornou status de falha após re-autenticação.")
-                                logging.info(f"Operação '{description}' recuperada com sucesso após re-autenticação.")
-                                return result
-                            except Exception as auth_exc:
-                                logging.error(f"Falha na re-autenticação ou na tentativa final: {auth_exc}")
+                            self.platform.refresh_auth()
+                            logging.info("Re-autenticacao bem sucedida. Tentando operacao uma ultima vez...")
+                            result = func()
+                            if treat_false_as_failure and result is False:
+                                raise RuntimeError(f"{description} retornou status de falha apos re-autenticacao.")
+                            logging.info(f"Operacao '{description}' recuperada com sucesso apos re-autenticacao.")
+                            return result
+                        except Exception as auth_exc:
+                            logging.error(f"Falha na re-autenticacao ou na tentativa final: {auth_exc}")
 
                     logging.error(
                         f"{description} falhou após {self._retry_attempts} retentativas: {e}",
@@ -233,6 +250,53 @@ class DownloadWorker(QRunnable):
     def _persist_resume_state(self) -> None:
         if self.resume_manager and self.resume_state:
             self.resume_manager.save_state(self.platform_name, self.resume_state)
+
+    def pause(self) -> None:
+        self._pause_event.clear()
+
+    def resume(self) -> None:
+        self._pause_event.set()
+
+    def cancel(self) -> None:
+        self._cancelled = True
+        self._pause_event.set()
+
+    def request_save_progress(self) -> None:
+        self._save_requested = True
+
+    def _force_save_progress(self) -> None:
+        """Save progress to disk, creating resume infrastructure if needed."""
+        if not self.resume_manager:
+            self.resume_manager = ResumeManager(self.download_dir)
+        if not self.resume_state:
+            session = self.platform.get_session()
+            request_context = self._build_request_context(session) if session else {}
+            self.resume_state = self.resume_manager.initialize_state(
+                self.platform_name, self.selection, self.selected_courses, request_context
+            )
+        self._persist_resume_state()
+
+    def _build_retry_selection(self) -> Dict[str, Any] | None:
+        """Build a selection containing only failed/partial lessons."""
+        if not self._retry_lessons:
+            return None
+        retry = json.loads(json.dumps(self.selection))
+        for course_id, course_data in retry.items():
+            for mod_idx, module in enumerate(course_data.get("modules", [])):
+                for les_idx, lesson in enumerate(module.get("lessons", [])):
+                    if (str(course_id), mod_idx, les_idx) not in self._retry_lessons:
+                        lesson["download"] = False
+        return retry
+
+    def _wait_if_paused(self) -> None:
+        """Block until unpaused, checking for save/cancel while waiting."""
+        while not self._cancelled:
+            if self._save_requested:
+                self._save_requested = False
+                self._force_save_progress()
+                self.signals.result.emit("Progresso salvo com sucesso.")
+            if self._pause_event.wait(timeout=0.5):
+                return
 
     def _ensure_resume_state(self, session: requests.Session) -> None:
         if not self.resume_manager:
@@ -419,6 +483,69 @@ class DownloadWorker(QRunnable):
         generated = audio_path.parent / f"{audio_path.stem}.{output_format}"
         return generated if generated.exists() else None
 
+    @staticmethod
+    def _classify_error(exc: Exception) -> tuple:
+        """Return (error_type, error_message) from an exception."""
+        msg = str(exc)[:200]
+        if isinstance(exc, requests.exceptions.HTTPError):
+            status_code = exc.response.status_code if exc.response is not None else "?"
+            return f"HTTP {status_code}", msg
+        if isinstance(exc, requests.exceptions.ConnectionError):
+            return "Erro de conexao", msg
+        if isinstance(exc, requests.exceptions.Timeout):
+            return "Timeout", msg
+        if isinstance(exc, subprocess.CalledProcessError):
+            return "Processo externo falhou", msg
+        if isinstance(exc, FileNotFoundError):
+            return "Arquivo nao encontrado", msg
+        if isinstance(exc, RuntimeError):
+            return "Erro de execucao", msg
+        return type(exc).__name__, msg
+
+    def _emit_download_report(self) -> None:
+        """Emit a formatted download report summary via result signal."""
+        report = self._download_report
+        if not report:
+            return
+
+        total = len(report)
+        success = sum(1 for r in report if r.status == "success")
+        partial = sum(1 for r in report if r.status == "partial")
+        error = sum(1 for r in report if r.status == "error")
+        skipped = sum(1 for r in report if r.status == "skipped")
+
+        lines = [
+            "",
+            "=" * 50,
+            "         RELATORIO DE DOWNLOAD",
+            "=" * 50,
+            f"Total de aulas: {total}",
+            f"  [OK]      Sucesso:  {success}",
+            f"  [PARCIAL] Parcial:  {partial}",
+            f"  [ERRO]    Erro:     {error}",
+            f"  [PULADO]  Puladas:  {skipped}",
+        ]
+
+        problem_lessons = [r for r in report if r.status in ("error", "partial")]
+        if problem_lessons:
+            lines.append("")
+            lines.append("Detalhes de aulas com problemas:")
+            lines.append("-" * 50)
+            for lr in problem_lessons:
+                lines.append(f"  [{lr.status.upper()}] {lr.course} > {lr.module} > {lr.lesson}")
+                if lr.error_message:
+                    lines.append(f"    Erro geral: {lr.error_message}")
+                for v in lr.videos:
+                    if v.status == "error":
+                        lines.append(f"    [ERRO] Video \"{v.name}\" - {v.error_type}: {v.error_message}")
+                for a in lr.attachments:
+                    if a.status == "error":
+                        lines.append(f"    [ERRO] Anexo \"{a.name}\" - {a.error_type}: {a.error_message}")
+
+        lines.append("=" * 50)
+        self.signals.result.emit("\n".join(lines))
+        self.signals.download_report.emit(report)
+
     def _maybe_transcribe_video(self, expected_media_path: Path) -> None:
         """Extract audio and transcribe a video when Whisper is enabled."""
 
@@ -487,6 +614,8 @@ class DownloadWorker(QRunnable):
             lessons_processed = 0
 
             for course_id, course_data in self.selection.items():
+                if self._cancelled:
+                    break
                 course_id_str = str(course_id)
                 course_slug = course_data.get("slug")
                 course_title = course_data.get("name", f"Curso-{course_id}")
@@ -497,6 +626,8 @@ class DownloadWorker(QRunnable):
                 self.signals.result.emit(f"Processando curso {course_title}")
 
                 for module_index, module in enumerate(course_data.get("modules", []), start=1):
+                    if self._cancelled:
+                        break
                     if module.get("download") is False:
                         self.signals.result.emit(f"  -> Pulando módulo não selecionado para download ou bloqueado: {module.get('title', 'Unknown Module')}")
                         continue
@@ -520,6 +651,10 @@ class DownloadWorker(QRunnable):
                             self.signals.result.emit(f"    - Pulando aula não selecionada para download ou bloqueada: {lesson.get('title', 'Unknown Lesson')}")
                             continue
 
+                        self._wait_if_paused()
+                        if self._cancelled:
+                            break
+
                         lesson_key = (
                             ResumeManager._lesson_key(lesson, lesson_index)
                             if self.resume_manager
@@ -539,6 +674,13 @@ class DownloadWorker(QRunnable):
                                 self.signals.result.emit(
                                     f"    - Aula '{lesson.get('title', 'Unknown Lesson')}' já concluída anteriormente. Pulando downloads."
                                 )
+                                self._download_report.append(LessonDownloadReport(
+                                    course=course_title,
+                                    module=module_title,
+                                    lesson=lesson.get("title", "Unknown Lesson"),
+                                    status="skipped",
+                                ))
+                                self.signals.lesson_status.emit("skipped")
                                 lessons_processed += 1
                                 progress = int((lessons_processed / total_lessons) * 100) if total_lessons > 0 else 0
                                 self.signals.progress.emit(progress)
@@ -552,6 +694,11 @@ class DownloadWorker(QRunnable):
                         lesson_path = module_path / lesson_title_full
                         lesson_path.mkdir(parents=True, exist_ok=True)
                         last_downloaded_video_path: Optional[Path] = None
+                        lesson_report = LessonDownloadReport(
+                            course=course_title,
+                            module=module_title,
+                            lesson=lesson_title,
+                        )
                         try:
                             self.signals.result.emit(f"    - Obtendo detalhes para a aula: {lesson_title}")
                             lesson_details = self._run_with_retries(
@@ -681,6 +828,9 @@ class DownloadWorker(QRunnable):
                                         self.signals.result.emit(
                                             f"    - Vídeo já baixado previamente pelo resumo: {video_name}"
                                         )
+                                        lesson_report.videos.append(ItemDownloadResult(
+                                            name=video_name, status="skipped",
+                                        ))
                                         continue
 
                                     try:
@@ -695,14 +845,22 @@ class DownloadWorker(QRunnable):
                                             course_id_str, module_key, lesson_key, "videos", video_key, True
                                         )
                                         self.signals.result.emit(f"    - Vídeo baixado: {video_name}")
+                                        lesson_report.videos.append(ItemDownloadResult(
+                                            name=video_name, status="success",
+                                        ))
                                         self._maybe_transcribe_video(video_path)
-                                    except Exception:
+                                    except Exception as e:
+                                        err_type, err_msg = self._classify_error(e)
                                         self._mark_resume_status(
                                             course_id_str, module_key, lesson_key, "videos", video_key, False
                                         )
                                         self.signals.result.emit(
-                                            f"    - [ERROR] Falha ao baixar vídeo: {video_name}"
+                                            f"    - [ERROR] Falha ao baixar vídeo: {video_name} ({err_type})"
                                         )
+                                        lesson_report.videos.append(ItemDownloadResult(
+                                            name=video_name, status="error",
+                                            error_type=err_type, error_message=err_msg,
+                                        ))
 
                             for attachment_index, attachment in enumerate(lesson_details.attachments, start=1):
                                 attachment_order = attachment.order or attachment_index
@@ -739,6 +897,9 @@ class DownloadWorker(QRunnable):
                                     self.signals.result.emit(
                                         f"    - Anexo já baixado previamente pelo resumo: {attachment.filename}"
                                     )
+                                    lesson_report.attachments.append(ItemDownloadResult(
+                                        name=attachment.filename, status="skipped",
+                                    ))
                                     continue
 
                                 try:
@@ -752,13 +913,21 @@ class DownloadWorker(QRunnable):
                                         course_id_str, module_key, lesson_key, "attachments", attachment_key, True
                                     )
                                     self.signals.result.emit(f"    - Anexo baixado: {attachment.filename}")
-                                except Exception:
+                                    lesson_report.attachments.append(ItemDownloadResult(
+                                        name=attachment.filename, status="success",
+                                    ))
+                                except Exception as e:
+                                    err_type, err_msg = self._classify_error(e)
                                     self._mark_resume_status(
                                         course_id_str, module_key, lesson_key, "attachments", attachment_key, False
                                     )
                                     self.signals.result.emit(
-                                        f"    - [ERROR] Falha ao baixar anexo: {attachment.filename}"
+                                        f"    - [ERROR] Falha ao baixar anexo: {attachment.filename} ({err_type})"
                                     )
+                                    lesson_report.attachments.append(ItemDownloadResult(
+                                        name=attachment.filename, status="error",
+                                        error_type=err_type, error_message=err_msg,
+                                    ))
 
                             if lesson_details.auxiliary_urls:
                                 aux_path = lesson_path / f"Links Extras.txt"
@@ -806,11 +975,14 @@ class DownloadWorker(QRunnable):
                                      self.signals.result.emit(f"      - [AVISO] Falha ao atualizar status: {status_exc}")
 
                         except Exception as e:
+                            err_type, err_msg = self._classify_error(e)
                             logging.error(f"Failed to fetch details for lesson '{lesson_title}': {e}")
                             self._mark_resume_status(
                                 course_id_str, module_key, lesson_key, "description", None, False
                             )
-                            self.signals.result.emit(f"    - [ERROR] Falha em obter dados da aula: {lesson_title}")
+                            self.signals.result.emit(f"    - [ERROR] Falha em obter dados da aula: {lesson_title} ({err_type})")
+                            lesson_report.status = "error"
+                            lesson_report.error_message = f"{err_type}: {err_msg}"
 
                             if getattr(self.settings, "delete_folder_on_error", False):
                                 try:
@@ -820,6 +992,58 @@ class DownloadWorker(QRunnable):
                                 except Exception as del_err:
                                     logging.error(f"Falha ao excluir pasta da aula {lesson_path}: {del_err}")
                                     self.signals.result.emit(f"    - [ERROR] Falha ao excluir pasta da aula: {del_err}")
+
+                        # Compute final lesson status if not already set to "error"
+                        if lesson_report.status != "error":
+                            has_errors = any(
+                                v.status == "error" for v in lesson_report.videos
+                            ) or any(
+                                a.status == "error" for a in lesson_report.attachments
+                            )
+                            has_success = any(
+                                v.status == "success" for v in lesson_report.videos
+                            ) or any(
+                                a.status == "success" for a in lesson_report.attachments
+                            )
+                            if has_errors and has_success:
+                                lesson_report.status = "partial"
+                            elif has_errors:
+                                lesson_report.status = "error"
+                            else:
+                                lesson_report.status = "success"
+
+                        self._download_report.append(lesson_report)
+                        self.signals.lesson_status.emit(lesson_report.status)
+
+                        if lesson_report.status in ("error", "partial"):
+                            self._retry_lessons.add((course_id_str, module_index - 1, lesson_index - 1))
+
+                        if lesson_report.status == "partial":
+                            self._partial_count += 1
+                        elif lesson_report.status == "error":
+                            self._error_count += 1
+
+                        pause_on_partial = getattr(self.settings, "pause_on_partial_count", 0)
+                        pause_on_error = getattr(self.settings, "pause_on_error_count", 0)
+                        should_auto_pause = False
+                        if pause_on_partial > 0 and self._partial_count >= pause_on_partial:
+                            self.signals.result.emit(
+                                f"    -- Download pausado automaticamente: {self._partial_count} aula(s) parcial(is)."
+                            )
+                            self._partial_count = 0
+                            should_auto_pause = True
+                        if pause_on_error > 0 and self._error_count >= pause_on_error:
+                            self.signals.result.emit(
+                                f"    -- Download pausado automaticamente: {self._error_count} aula(s) com erro."
+                            )
+                            self._error_count = 0
+                            should_auto_pause = True
+                        if should_auto_pause:
+                            self._pause_event.clear()
+                            self.signals.auto_paused.emit()
+                            self._wait_if_paused()
+                            if self._cancelled:
+                                break
 
                         if self.resume_manager and self.resume_state:
                             self.resume_state["completed"] = self.resume_manager.is_complete(
@@ -843,12 +1067,20 @@ class DownloadWorker(QRunnable):
                                 self.signals.result.emit(f"    - Aguardando {wait_time:.1f}s antes da próxima aula...")
                                 time.sleep(wait_time)
 
-            self.signals.result.emit("Processo de download concluído.")
-            if total_lessons == 0:
-                self.signals.progress.emit(100)
+            self._emit_download_report()
+            if self._cancelled:
+                self.signals.result.emit("Download cancelado pelo usuario.")
+            else:
+                self.signals.result.emit("Processo de download concluído.")
+                if total_lessons == 0:
+                    self.signals.progress.emit(100)
 
         except Exception as e:
             logging.error(f"An unexpected error occurred in DownloadWorker: {e}", exc_info=True)
+            self._emit_download_report()
             self.signals.error.emit((type(e), e, str(e)))
         finally:
+            retry = self._build_retry_selection()
+            if retry:
+                self.signals.retry_selection.emit(json.dumps(retry))
             self.signals.finished.emit()

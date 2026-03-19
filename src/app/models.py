@@ -45,3 +45,24 @@ class LessonContent:
     auxiliary_urls: List[AuxiliaryURL] = field(default_factory=list)
     videos: List[Video] = field(default_factory=list)
     attachments: List[Attachment] = field(default_factory=list)
+
+
+@dataclass
+class ItemDownloadResult:
+    """Result of downloading a single item (video or attachment)."""
+    name: str
+    status: str  # "success", "error", "skipped"
+    error_type: str | None = None
+    error_message: str | None = None
+
+
+@dataclass
+class LessonDownloadReport:
+    """Download report for a single lesson."""
+    course: str
+    module: str
+    lesson: str
+    status: str = "success"  # "success", "partial", "error", "skipped"
+    videos: List[ItemDownloadResult] = field(default_factory=list)
+    attachments: List[ItemDownloadResult] = field(default_factory=list)
+    error_message: str | None = None

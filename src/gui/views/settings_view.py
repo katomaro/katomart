@@ -398,6 +398,24 @@ class SettingsView(QWidget):
             "Use -1 para esperar a duração do vídeo baixado."
         )
 
+        self.pause_on_partial_spin = QSpinBox()
+        self.pause_on_partial_spin.setRange(0, 9999)
+        self.pause_on_partial_spin.setMinimumWidth(64)
+        self.pause_on_partial_spin.setSpecialValueText("Desativado")
+        self.pause_on_partial_spin.setToolTip(
+            "Pausar automaticamente apos X aulas com download parcial.\n"
+            "0 = desativado."
+        )
+
+        self.pause_on_error_spin = QSpinBox()
+        self.pause_on_error_spin.setRange(0, 9999)
+        self.pause_on_error_spin.setMinimumWidth(64)
+        self.pause_on_error_spin.setSpecialValueText("Desativado")
+        self.pause_on_error_spin.setToolTip(
+            "Pausar automaticamente apos X aulas com erro.\n"
+            "0 = desativado."
+        )
+
         self.use_http_proxy_check.toggled.connect(self._update_proxy_fields_state)
         self._update_proxy_fields_state(False)
         self.use_whisper_transcription_check.toggled.connect(
@@ -419,6 +437,8 @@ class SettingsView(QWidget):
         self._paid_form_layout.addRow(self.auto_reauth_check)
         self._paid_form_layout.addRow("Delay entre aulas (s):", self.lesson_access_delay_spin)
         self._paid_form_layout.addRow("Comportamento ao processar aula:", self.lesson_watch_status_combo)
+        self._paid_form_layout.addRow("Pausar apos X aulas parciais:", self.pause_on_partial_spin)
+        self._paid_form_layout.addRow("Pausar apos X aulas com erro:", self.pause_on_error_spin)
         self._paid_form_layout.addRow(self.create_resume_summary_check)
         self._paid_form_layout.addRow("Caminho da CDM:", self.cdm_path_edit)
         self._paid_form_layout.addRow(self.use_http_proxy_check)
@@ -503,7 +523,9 @@ class SettingsView(QWidget):
         self.max_concurrent_downloads_spin.setValue(settings.max_concurrent_segment_downloads)
         self.retry_attempts_spin.setValue(settings.download_retry_attempts)
         self.lesson_access_delay_spin.setValue(getattr(settings, "lesson_access_delay", 0))
-        
+        self.pause_on_partial_spin.setValue(getattr(settings, "pause_on_partial_count", 0))
+        self.pause_on_error_spin.setValue(getattr(settings, "pause_on_error_count", 0))
+
         index = self.lesson_watch_status_combo.findData(getattr(settings, "lesson_watch_status_behavior", "none"))
         if index != -1:
             self.lesson_watch_status_combo.setCurrentIndex(index)
@@ -619,6 +641,8 @@ class SettingsView(QWidget):
             has_full_permissions=current_settings.has_full_permissions,
             lesson_watch_status_behavior=self.lesson_watch_status_combo.currentData(),
             skip_video_download=self.skip_video_download_check.isChecked(),
+            pause_on_partial_count=self.pause_on_partial_spin.value(),
+            pause_on_error_count=self.pause_on_error_spin.value(),
         )
         self._settings_manager.save_settings(updated_settings)
 

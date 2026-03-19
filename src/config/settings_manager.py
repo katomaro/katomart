@@ -74,6 +74,8 @@ class AppSettings:
     lesson_watch_status_behavior: str = "none"
     skip_video_download: bool = False
     youtube_cookies_path: str = ""
+    pause_on_partial_count: int = 0
+    pause_on_error_count: int = 0
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "AppSettings":
