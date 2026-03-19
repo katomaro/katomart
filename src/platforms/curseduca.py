@@ -76,14 +76,71 @@ def _extract_next_data(html_content: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _collect_lessons(structure: Any) -> List[Dict[str, Any]]:
+    """Recursively collect LESSON items from a structure, flattening nested MODULEs."""
+    lessons: List[Dict[str, Any]] = []
+    if not isinstance(structure, list):
+        return lessons
+    for item in structure:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") == "LESSON":
+            lesson_data = item.get("data", {})
+            if isinstance(lesson_data, str):
+                continue  # Unresolved reference
+            lesson_order = item.get("order") or lesson_data.get("order") or len(lessons) + 1
+            lessons.append(
+                {
+                    "id": str(lesson_data.get("id") or lesson_data.get("uuid") or f"lesson-{len(lessons)+1}"),
+                    "uuid": lesson_data.get("uuid") or str(lesson_data.get("id")),
+                    "title": lesson_data.get("title", f"Aula {len(lessons)+1}"),
+                    "order": lesson_order,
+                    "type": lesson_data.get("type"),
+                    "locked": lesson_data.get("status") == "LOCKED",
+                }
+            )
+        elif item.get("type") == "MODULE":
+            sub_data = item.get("data", {})
+            if isinstance(sub_data, dict):
+                lessons.extend(_collect_lessons(sub_data.get("structure", [])))
+    return lessons
+
+
+def _find_child_module_ids(modules: List[Dict[str, Any]]) -> set:
+    """Return IDs of modules that are nested inside another module's structure."""
+    child_ids: set = set()
+    for item in modules:
+        if not isinstance(item, dict) or item.get("type") != "MODULE":
+            continue
+        data = item.get("data", {})
+        if not isinstance(data, dict):
+            continue
+        _collect_child_ids(data.get("structure", []), child_ids)
+    return child_ids
+
+
+def _collect_child_ids(structure: Any, child_ids: set) -> None:
+    if not isinstance(structure, list):
+        return
+    for item in structure:
+        if isinstance(item, dict) and item.get("type") == "MODULE":
+            sub_data = item.get("data", {})
+            if isinstance(sub_data, dict) and sub_data.get("id"):
+                child_ids.add(sub_data["id"])
+            _collect_child_ids(sub_data.get("structure", []) if isinstance(sub_data, dict) else [], child_ids)
+
+
 def _simplify_course_structure(course_data: Dict[str, Any]) -> Dict[str, Any]:
     """Reduces the course payload to modules and lessons only."""
-    simplified = {"title": "", "slug": "", "modules": []}
+    simplified: Dict[str, Any] = {"title": "", "slug": "", "modules": []}
 
     # Handle new RSC format with direct modules list
     rsc_modules = course_data.get("modules", [])
     if rsc_modules:
-        for module_index, item in enumerate(rsc_modules, start=1):
+        child_ids = _find_child_module_ids(rsc_modules)
+
+        module_order = 0
+        for item in rsc_modules:
             if not isinstance(item, dict) or item.get("type") != "MODULE":
                 continue
 
@@ -91,39 +148,25 @@ def _simplify_course_structure(course_data: Dict[str, Any]) -> Dict[str, Any]:
             if isinstance(module_data, str):
                 continue  # Unresolved reference
 
-            module_title = module_data.get("title", f"Módulo {module_index}")
-            module = {
-                "id": str(module_data.get("id") or module_data.get("uuid") or f"module-{module_index}"),
-                "title": module_title,
-                "order": module_index,
-                "lessons": [],
-                "locked": False,
-            }
+            # Skip child modules — their lessons are collected by the parent
+            if module_data.get("id") in child_ids:
+                continue
 
-            structure = module_data.get("structure", [])
-            if isinstance(structure, list):
-                for lesson_index, lesson_item in enumerate(structure, start=1):
-                    if not isinstance(lesson_item, dict) or lesson_item.get("type") != "LESSON":
-                        continue
+            module_order += 1
+            lessons = _collect_lessons(module_data.get("structure", []))
+            # Re-number lessons sequentially
+            for i, lesson in enumerate(lessons, start=1):
+                lesson["order"] = i
 
-                    lesson_data = lesson_item.get("data", {})
-                    if isinstance(lesson_data, str):
-                        continue  # Unresolved reference
-
-                    lesson_title = lesson_data.get("title", f"Aula {lesson_index}")
-                    lesson_order = lesson_item.get("order") or lesson_data.get("order") or lesson_index
-                    module["lessons"].append(
-                        {
-                            "id": str(lesson_data.get("id") or lesson_data.get("uuid") or f"lesson-{lesson_index}"),
-                            "uuid": lesson_data.get("uuid") or str(lesson_data.get("id")),
-                            "title": lesson_title,
-                            "order": lesson_order,
-                            "type": lesson_data.get("type"),
-                            "locked": lesson_data.get("status") == "LOCKED",
-                        }
-                    )
-
-            simplified["modules"].append(module)
+            simplified["modules"].append(
+                {
+                    "id": str(module_data.get("id") or module_data.get("uuid") or f"module-{module_order}"),
+                    "title": module_data.get("title", f"Módulo {module_order}"),
+                    "order": module_order,
+                    "lessons": lessons,
+                    "locked": False,
+                }
+            )
         return simplified
 
     # Fallback: handle old format with nested content structure
@@ -132,37 +175,23 @@ def _simplify_course_structure(course_data: Dict[str, Any]) -> Dict[str, Any]:
     simplified["title"] = inner_content.get("title", "Curso")
     simplified["slug"] = inner_content.get("slug", "curso")
 
-    structure = inner_content.get("structure", [])
-    for module_index, item in enumerate(structure, start=1):
+    for module_index, item in enumerate(inner_content.get("structure", []), start=1):
         if not isinstance(item, dict) or item.get("type") != "MODULE":
             continue
         module_data = item.get("data", {})
-        module_title = module_data.get("title", f"Módulo {module_index}")
-        module = {
-            "id": str(module_data.get("uuid") or module_data.get("id") or f"module-{module_index}"),
-            "title": module_title,
-            "order": module_index,
-            "lessons": [],
-            "locked": False,
-        }
+        lessons = _collect_lessons(module_data.get("structure", []))
+        for i, lesson in enumerate(lessons, start=1):
+            lesson["order"] = i
 
-        for lesson_index, lesson_item in enumerate(module_data.get("structure", []), start=1):
-            if not isinstance(lesson_item, dict) or lesson_item.get("type") != "LESSON":
-                continue
-            lesson_data = lesson_item.get("data", {})
-            lesson_title = lesson_data.get("title", f"Aula {lesson_index}")
-            module["lessons"].append(
-                {
-                    "id": str(lesson_data.get("id") or lesson_data.get("uuid") or f"lesson-{lesson_index}"),
-                    "uuid": lesson_data.get("uuid") or str(lesson_data.get("id")),
-                    "title": lesson_title,
-                    "order": lesson_data.get("order", lesson_index),
-                    "type": lesson_data.get("type"),
-                    "locked": lesson_data.get("status") == "LOCKED",
-                }
-            )
-
-        simplified["modules"].append(module)
+        simplified["modules"].append(
+            {
+                "id": str(module_data.get("uuid") or module_data.get("id") or f"module-{module_index}"),
+                "title": module_data.get("title", f"Módulo {module_index}"),
+                "order": module_index,
+                "lessons": lessons,
+                "locked": False,
+            }
+        )
 
     return simplified
 
