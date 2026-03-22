@@ -349,9 +349,25 @@ class MainWindow(QMainWindow):
                 self._current_worker = None
                 self._disconnect_worker(worker)
                 worker.cancel()
-                self._stacked_widget.setCurrentWidget(self.auth_tab_widget)
+                self._reset_to_auth()
         else:
-            self._stacked_widget.setCurrentWidget(self.auth_tab_widget)
+            self._reset_to_auth()
+
+    def _reset_to_auth(self) -> None:
+        """Clean up platform/worker state and return to auth tab."""
+        if self._platform:
+            try:
+                self._platform.close()
+            except Exception:
+                pass
+        self._platform = None
+        self._platform_name = None
+        self._selected_courses = []
+        self._resume_state = None
+        self._retry_selection_json = None
+        self.auth_view.list_products_button.setEnabled(True)
+        self.auth_view.list_products_button.setText("Listar Produtos da Conta")
+        self._stacked_widget.setCurrentWidget(self.auth_tab_widget)
 
     def _on_reauth_requested(self) -> None:
         """Re-authenticate on the platform. If token-only, ask for a new token."""
