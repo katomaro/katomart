@@ -38,7 +38,7 @@ class DownloaderFactory:
             return HotmartDownloader(settings_manager)
         elif "pandavideo.com" in url:
             return PandaVideoDownloader(settings_manager)
-        elif "player.scaleup.com.br" in url:
+        elif "player.scaleup.com.br" in url or "smartplayer.io" in url:
             return ScaleUpDownloader(settings_manager)
         elif "play.gumlet.io" in url:
             return GumletDownloader(settings_manager)
