@@ -1083,4 +1083,5 @@ class DownloadWorker(QRunnable):
             retry = self._build_retry_selection()
             if retry:
                 self.signals.retry_selection.emit(json.dumps(retry))
+            self.platform.close()
             self.signals.finished.emit()

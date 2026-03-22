@@ -224,6 +224,13 @@ class BasePlatform(ABC):
         """Returns the authenticated requests session."""
         return self._session
 
+    def close(self) -> None:
+        """
+        Cleans up platform resources (e.g., browser contexts).
+        Override in subclasses that hold persistent resources.
+        """
+        pass
+
 
 PLATFORM_REGISTRY = {
 }
