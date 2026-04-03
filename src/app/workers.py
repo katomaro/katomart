@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import re
 import subprocess
 import threading
@@ -7,6 +8,7 @@ import time
 import shutil
 import html
 import inspect
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -18,6 +20,7 @@ from src.platforms.base import BasePlatform
 from src.config.settings_manager import SettingsManager
 from src.downloaders.factory import DownloaderFactory
 from src.utils.resume_manager import ResumeManager
+from src.utils.history_manager import HistoryManager
 from src.app.models import ItemDownloadResult, LessonDownloadReport
 
 from src.utils.filesystem import sanitize_path_component
@@ -153,6 +156,16 @@ class DownloadWorker(QRunnable):
         self._partial_count = 0
         self._error_count = 0
         self._retry_lessons: set = set()
+        self._history_manager: HistoryManager | None = None
+        self._history_session_id: int | None = None
+
+        if getattr(self.settings, "enable_download_history", False):
+            try:
+                db_path = self.download_dir / "katomart_history.db"
+                self._history_manager = HistoryManager(db_path)
+            except Exception as exc:
+                logging.error("Falha ao inicializar histórico de downloads: %s", exc)
+                self._history_manager = None
 
         if getattr(self.settings, "create_resume_summary", False):
             self.resume_manager = ResumeManager(self.download_dir)
@@ -431,7 +444,8 @@ class DownloadWorker(QRunnable):
         ]
 
         logging.info(f"Extraindo áudio com ffmpeg: {' '.join(cmd)}")
-        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT,
+                       **({"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}))
         return audio_path
 
     def _get_video_duration(self, video_path: Path) -> float:
@@ -444,7 +458,8 @@ class DownloadWorker(QRunnable):
             return 0.0
         cmd = [ffmpeg_exe, "-i", str(video_path)]
         try:
-            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace')
+            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace',
+                                   **({"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}))
             # Search for "Duration: 00:00:00.00"
             match = re.search(r"Duration:\s*(\d+):(\d+):(\d+\.\d+)", result.stderr)
             if match:
@@ -501,6 +516,13 @@ class DownloadWorker(QRunnable):
         if isinstance(exc, RuntimeError):
             return "Erro de execucao", msg
         return type(exc).__name__, msg
+
+    def _finish_history_session(self, status: str) -> None:
+        if self._history_manager and self._history_session_id is not None:
+            try:
+                self._history_manager.finish_session(self._history_session_id, status)
+            except Exception as exc:
+                logging.error("Falha ao finalizar sessão de histórico: %s", exc)
 
     def _emit_download_report(self) -> None:
         """Emit a formatted download report summary via result signal."""
@@ -602,6 +624,12 @@ class DownloadWorker(QRunnable):
 
             self._ensure_resume_state(session)
 
+            if self._history_manager:
+                try:
+                    self._history_session_id = self._history_manager.start_session(self.platform_name)
+                except Exception as exc:
+                    logging.error("Falha ao iniciar sessão de histórico: %s", exc)
+
             # Count only selected lessons (where download is not False)
             total_lessons = sum(
                 1
@@ -630,6 +658,23 @@ class DownloadWorker(QRunnable):
                         break
                     if module.get("download") is False:
                         self.signals.result.emit(f"  -> Pulando módulo não selecionado para download ou bloqueado: {module.get('title', 'Unknown Module')}")
+                        if self._history_manager and self._history_session_id is not None:
+                            for _lesson in module.get("lessons", []):
+                                try:
+                                    self._history_manager.record_lesson(
+                                        self._history_session_id, course_id_str,
+                                        course_data.get("name", f"Curso-{course_id}"),
+                                        module.get("title", "Módulo sem titulo"),
+                                        _lesson.get("title", "Aula sem titulo"),
+                                        LessonDownloadReport(
+                                            course=course_data.get("name", f"Curso-{course_id}"),
+                                            module=module.get("title", "Módulo sem titulo"),
+                                            lesson=_lesson.get("title", "Aula sem titulo"),
+                                            status="not_selected",
+                                        ),
+                                    )
+                                except Exception as exc:
+                                    logging.error("Falha ao registrar aula no histórico: %s", exc)
                         continue
                     module_title = module.get("title", "Módulo sem titulo")
                     module_title = sanitize_path_component(module_title)
@@ -649,6 +694,22 @@ class DownloadWorker(QRunnable):
                     for lesson_index, lesson in enumerate(module.get("lessons", []), start=1):
                         if lesson.get("download") is False:
                             self.signals.result.emit(f"    - Pulando aula não selecionada para download ou bloqueada: {lesson.get('title', 'Unknown Lesson')}")
+                            if self._history_manager and self._history_session_id is not None:
+                                try:
+                                    self._history_manager.record_lesson(
+                                        self._history_session_id, course_id_str,
+                                        course_data.get("name", f"Curso-{course_id}"),
+                                        module.get("title", "Módulo sem titulo"),
+                                        lesson.get("title", "Aula sem titulo"),
+                                        LessonDownloadReport(
+                                            course=course_data.get("name", f"Curso-{course_id}"),
+                                            module=module.get("title", "Módulo sem titulo"),
+                                            lesson=lesson.get("title", "Aula sem titulo"),
+                                            status="not_selected",
+                                        ),
+                                    )
+                                except Exception as exc:
+                                    logging.error("Falha ao registrar aula no histórico: %s", exc)
                             continue
 
                         self._wait_if_paused()
@@ -674,18 +735,31 @@ class DownloadWorker(QRunnable):
                                 self.signals.result.emit(
                                     f"    - Aula '{lesson.get('title', 'Unknown Lesson')}' já concluída anteriormente. Pulando downloads."
                                 )
-                                self._download_report.append(LessonDownloadReport(
+                                _skipped_report = LessonDownloadReport(
                                     course=course_title,
                                     module=module_title,
                                     lesson=lesson.get("title", "Unknown Lesson"),
                                     status="skipped",
-                                ))
+                                )
+                                self._download_report.append(_skipped_report)
+                                if self._history_manager and self._history_session_id is not None:
+                                    try:
+                                        self._history_manager.record_lesson(
+                                            self._history_session_id, course_id_str,
+                                            course_data.get("name", f"Curso-{course_id}"),
+                                            module.get("title", "Módulo sem titulo"),
+                                            lesson.get("title", "Unknown Lesson"),
+                                            _skipped_report,
+                                        )
+                                    except Exception as exc:
+                                        logging.error("Falha ao registrar aula no histórico: %s", exc)
                                 self.signals.lesson_status.emit("skipped")
                                 lessons_processed += 1
                                 progress = int((lessons_processed / total_lessons) * 100) if total_lessons > 0 else 0
                                 self.signals.progress.emit(progress)
                                 continue
 
+                        lesson_started_at = datetime.now(timezone.utc).isoformat()
                         lesson_title = lesson.get("title", "Aula sem titulo")
                         lesson_title = sanitize_path_component(lesson_title)
                         lesson_title = truncate_component(lesson_title, getattr(self.settings, 'max_lesson_name_length', 60))
@@ -1015,6 +1089,21 @@ class DownloadWorker(QRunnable):
                         self._download_report.append(lesson_report)
                         self.signals.lesson_status.emit(lesson_report.status)
 
+                        if self._history_manager and self._history_session_id is not None:
+                            try:
+                                self._history_manager.record_lesson(
+                                    self._history_session_id,
+                                    course_id_str,
+                                    course_data.get("name", f"Curso-{course_id}"),
+                                    module.get("title", "Módulo sem titulo"),
+                                    lesson.get("title", "Aula sem titulo"),
+                                    lesson_report,
+                                    started_at=lesson_started_at,
+                                    lesson_path=str(lesson_path),
+                                )
+                            except Exception as exc:
+                                logging.error("Falha ao registrar aula no histórico: %s", exc)
+
                         if lesson_report.status in ("error", "partial"):
                             self._retry_lessons.add((course_id_str, module_index - 1, lesson_index - 1))
 
@@ -1069,8 +1158,10 @@ class DownloadWorker(QRunnable):
 
             self._emit_download_report()
             if self._cancelled:
+                self._finish_history_session("cancelled")
                 self.signals.result.emit("Download cancelado pelo usuario.")
             else:
+                self._finish_history_session("completed")
                 self.signals.result.emit("Processo de download concluído.")
                 if total_lessons == 0:
                     self.signals.progress.emit(100)
@@ -1078,6 +1169,7 @@ class DownloadWorker(QRunnable):
         except Exception as e:
             logging.error(f"An unexpected error occurred in DownloadWorker: {e}", exc_info=True)
             self._emit_download_report()
+            self._finish_history_session("error")
             self.signals.error.emit((type(e), e, str(e)))
         finally:
             retry = self._build_retry_selection()

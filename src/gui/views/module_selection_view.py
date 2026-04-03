@@ -104,10 +104,18 @@ class ModuleSelectionView(QWidget):
                 module_item.setCheckState(0, Qt.CheckState.Checked)
                 
                 for lesson in module.get("lessons", []):
-                    lesson_item = QTreeWidgetItem(module_item, [lesson["title"]])
+                    title = lesson["title"]
+                    is_locked = lesson.get("locked", False)
+                    if is_locked:
+                        title = f"🔒 {title}"
+                    lesson_item = QTreeWidgetItem(module_item, [title])
                     lesson_item.setData(0, Qt.ItemDataRole.UserRole, lesson)
                     lesson_item.setFlags(lesson_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-                    lesson_item.setCheckState(0, Qt.CheckState.Checked)
+                    if is_locked:
+                        lesson_item.setCheckState(0, Qt.CheckState.Unchecked)
+                        lesson_item.setDisabled(True)
+                    else:
+                        lesson_item.setCheckState(0, Qt.CheckState.Checked)
         
         self.tree_widget.expandAll()
 

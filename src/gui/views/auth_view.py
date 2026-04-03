@@ -58,8 +58,14 @@ class AuthView(QWidget):
         self.platform_combo = QComboBox()
         self.platform_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.platform_combo.setMaximumWidth(500)
+        self.dashboard_button = QPushButton("Dashboard")
+        self.dashboard_button.setToolTip("Abrir dashboard de histórico de downloads no navegador")
+        self.dashboard_button.setFixedWidth(100)
+        self.dashboard_button.hide()
+
         platform_layout.addWidget(platform_label)
         platform_layout.addWidget(self.platform_combo)
+        platform_layout.addWidget(self.dashboard_button)
         platform_layout.addStretch()
         layout.addLayout(platform_layout)
 

@@ -192,6 +192,11 @@ class SettingsView(QWidget):
 
         self.hardcode_subtitles_check = QCheckBox("Incorporar Legendas no Vídeo")
         self.download_embedded_check = QCheckBox("Baixar Vídeos na Descrição (recomendado)")
+        self.enable_download_history_check = QCheckBox("Habilitar histórico de downloads (Dashboard Web)")
+        self.dashboard_port_spin = QSpinBox()
+        self.dashboard_port_spin.setRange(1024, 65535)
+        self.dashboard_port_spin.setValue(6102)
+        self.dashboard_port_spin.setToolTip("Porta padrão: 6102")
 
         self.audio_lang_combo = QComboBox()
         self.audio_lang_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -277,6 +282,8 @@ class SettingsView(QWidget):
         self._form_layout.addRow("Caminho do Bento4 SDK:", self.bento4_path_edit)
         self._form_layout.addRow("Cookies do YouTube:", self.youtube_cookies_path_edit)
         self._form_layout.addRow(self.download_widevine_check)
+        self._form_layout.addRow(self.enable_download_history_check)
+        self._form_layout.addRow("Porta do Dashboard (padrão: 6102):", self.dashboard_port_spin)
 
         general_group = QGroupBox("Configurações Gerais")
         general_group.setLayout(self._form_layout)
@@ -500,6 +507,8 @@ class SettingsView(QWidget):
         self.delete_folder_on_error_check.setChecked(getattr(settings, "delete_folder_on_error", False))
         self.allowed_extensions_edit.setPlainText("\n".join(settings.allowed_attachment_extensions))
         self.download_embedded_check.setChecked(settings.download_embedded_videos)
+        self.enable_download_history_check.setChecked(getattr(settings, "enable_download_history", False))
+        self.dashboard_port_spin.setValue(getattr(settings, "dashboard_port", 6102))
         self.ffmpeg_path_edit.setText(getattr(settings, "ffmpeg_path", "./ffmpeg/bin"))
         self.bento4_path_edit.setText(getattr(settings, "bento4_path", "./bento4/bin"))
         self.youtube_cookies_path_edit.setText(getattr(settings, "youtube_cookies_path", ""))
@@ -630,6 +639,8 @@ class SettingsView(QWidget):
             allowed_platforms=list(current_settings.allowed_platforms),
             is_premium_member=current_settings.is_premium_member,
             download_embedded_videos=self.download_embedded_check.isChecked(),
+            enable_download_history=self.enable_download_history_check.isChecked(),
+            dashboard_port=self.dashboard_port_spin.value(),
             embed_domain_blacklist=[
                 (lambda s: (lambda h: h[4:] if h.startswith('www.') else h)(
                     (urlparse(s.strip()).netloc or urlparse(s.strip()).path or '').lower().strip()

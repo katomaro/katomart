@@ -163,7 +163,7 @@ class BasePlatform(ABC):
         return AuthField(
             name="token",
             label="Token de Acesso",
-            field_type=AuthFieldType.PASSWORD,
+            field_type=AuthFieldType.TEXT,
             placeholder="Cole aqui o token obtido na plataforma",
             required=False,
         )

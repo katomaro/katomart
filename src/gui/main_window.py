@@ -16,6 +16,7 @@ from src.platforms.base import PlatformFactory, BasePlatform
 from src.app.workers import FetchCoursesWorker, FetchModulesWorker, DownloadWorker
 from src.app.version_checker import VersionCheckWorker
 from src.utils.resume_manager import ResumeManager
+from src.web.app import DashboardServer
 
 class MainWindow(QMainWindow):
     """Main application window that holds all UI views."""
@@ -35,6 +36,7 @@ class MainWindow(QMainWindow):
         self._current_worker: DownloadWorker | None = None
         self._retry_selection_json: str | None = None
         self._thread_pool = QThreadPool()
+        self._dashboard_server: DashboardServer | None = None
 
         self._stacked_widget = QStackedWidget()
         self.setCentralWidget(self._stacked_widget)
@@ -60,6 +62,7 @@ class MainWindow(QMainWindow):
         self._stacked_widget.addWidget(self.course_selection_view)
         self._stacked_widget.addWidget(self.module_selection_view)
         self._stacked_widget.addWidget(self.progress_view)
+        self._setup_dashboard_button()
 
     def _show_subscription_prompt(self) -> None:
         """Displays a pop-up encouraging the monthly subscription."""
@@ -87,6 +90,29 @@ class MainWindow(QMainWindow):
         self.progress_view.cancel_requested.connect(self._on_cancel_download)
         self.progress_view.reauth_requested.connect(self._on_reauth_requested)
         self.progress_view.retry_requested.connect(self._on_retry_requested)
+
+    def _setup_dashboard_button(self) -> None:
+        settings = self._settings_manager.get_settings()
+        self.auth_view.dashboard_button.setVisible(
+            getattr(settings, "enable_download_history", False)
+        )
+        self.auth_view.dashboard_button.clicked.connect(self._open_dashboard)
+
+    def _open_dashboard(self) -> None:
+        settings = self._settings_manager.get_settings()
+        db_path = Path(settings.download_path) / "katomart_history.db"
+        if not db_path.exists():
+            QMessageBox.information(
+                self,
+                "Histórico vazio",
+                "Nenhum histórico de download encontrado. Faça um download com o histórico habilitado primeiro.",
+            )
+            return
+        if self._dashboard_server is None:
+            port = getattr(settings, "dashboard_port", 6102)
+            self._dashboard_server = DashboardServer(db_path, port=port, settings_path=self._settings_manager._settings_path)
+            self._dashboard_server.start()
+        self._dashboard_server.open_browser()
 
     def _start_version_check(self) -> None:
         """Starts an asynchronous check for the latest build on GitHub."""
@@ -430,3 +456,9 @@ class MainWindow(QMainWindow):
         if not self._retry_selection_json:
             return
         self._start_download(self._retry_selection_json)
+
+    def closeEvent(self, event) -> None:
+        if self._dashboard_server:
+            self._dashboard_server.stop()
+            self._dashboard_server = None
+        super().closeEvent(event)

@@ -76,6 +76,8 @@ class AppSettings:
     youtube_cookies_path: str = ""
     pause_on_partial_count: int = 0
     pause_on_error_count: int = 0
+    enable_download_history: bool = False
+    dashboard_port: int = 6102
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "AppSettings":
