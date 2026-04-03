@@ -73,6 +73,22 @@ def _extract_next_data(html_content: str) -> Optional[Dict[str, Any]]:
     if modules:
         return {"modules": modules, "refs": refs}
 
+    # Fallback: no MODULE refs found — look for course content in React component refs.
+    # Some Curseduca pages have LESSons directly in the structure (no MODULE wrapper).
+    for key, value in refs.items():
+        if not isinstance(value, list) or len(value) < 4:
+            continue
+        if value[0] != "$" or not isinstance(value[3], dict):
+            continue
+        props = value[3]
+        content = props.get("content")
+        if not isinstance(content, dict):
+            continue
+        inner = content.get("content")
+        if isinstance(inner, dict) and "structure" in inner:
+            resolved = resolve_refs(inner)
+            return {"content": {"content": resolved}}
+
     return None
 
 
@@ -89,6 +105,8 @@ def _collect_lessons(structure: Any) -> List[Dict[str, Any]]:
             if isinstance(lesson_data, str):
                 continue  # Unresolved reference
             lesson_order = item.get("order") or lesson_data.get("order") or len(lessons) + 1
+            metadata_me = lesson_data.get("metadata", {}).get("me", {})
+            is_blocked = metadata_me.get("isBlocked", False) or metadata_me.get("isBlockedByAvailabilityDate", False)
             lessons.append(
                 {
                     "id": str(lesson_data.get("id") or lesson_data.get("uuid") or f"lesson-{len(lessons)+1}"),
@@ -96,7 +114,7 @@ def _collect_lessons(structure: Any) -> List[Dict[str, Any]]:
                     "title": lesson_data.get("title", f"Aula {len(lessons)+1}"),
                     "order": lesson_order,
                     "type": lesson_data.get("type"),
-                    "locked": lesson_data.get("status") == "LOCKED",
+                    "locked": lesson_data.get("status") == "LOCKED" or is_blocked,
                 }
             )
         elif item.get("type") == "MODULE":
@@ -175,7 +193,8 @@ def _simplify_course_structure(course_data: Dict[str, Any]) -> Dict[str, Any]:
     simplified["title"] = inner_content.get("title", "Curso")
     simplified["slug"] = inner_content.get("slug", "curso")
 
-    for module_index, item in enumerate(inner_content.get("structure", []), start=1):
+    structure = inner_content.get("structure", [])
+    for module_index, item in enumerate(structure, start=1):
         if not isinstance(item, dict) or item.get("type") != "MODULE":
             continue
         module_data = item.get("data", {})
@@ -193,6 +212,22 @@ def _simplify_course_structure(course_data: Dict[str, Any]) -> Dict[str, Any]:
             }
         )
 
+    # Handle courses with LESSons directly in structure (no MODULE wrapper)
+    if not simplified["modules"] and structure:
+        top_lessons = _collect_lessons(structure)
+        if top_lessons:
+            for i, lesson in enumerate(top_lessons, start=1):
+                lesson["order"] = i
+            simplified["modules"].append(
+                {
+                    "id": str(inner_content.get("uuid") or inner_content.get("id") or "module-1"),
+                    "title": inner_content.get("title", "Módulo 1"),
+                    "order": 1,
+                    "lessons": top_lessons,
+                    "locked": False,
+                }
+            )
+
     return simplified
 
 
@@ -207,6 +242,9 @@ class CurseducaPlatform(BasePlatform):
         self._tenant_slug: str = ""
         self._tenant_uuid: str = ""
         self._tenant_id: str = ""
+        self._platform_tenant_id: str = ""
+        self._platform_tenant_slug: str = ""
+        self._platform_tenant_uuid: str = ""
         self._current_login_id: str = ""
         self._auth_id: str = ""
         self._member_data: Dict[str, Any] = {}
@@ -263,6 +301,28 @@ Para plataformas whitelabel Curseduca:
 
         self._api_key = api_key
 
+        # Fetch login page — also updates base_url to HTTPS if redirected
+        platform_tenant_uuid = None
+        try:
+            login_page = self._session.get(f"{base_url}/login", timeout=30)
+            login_page.raise_for_status()
+            # Update base_url if the site redirected (e.g. http → https)
+            final_parsed = urlparse(login_page.url)
+            final_base = f"{final_parsed.scheme}://{final_parsed.netloc}"
+            if final_base != base_url:
+                logging.info("Curseduca: base_url updated from %s to %s after redirect", base_url, final_base)
+                base_url = final_base
+                self._base_url = base_url
+                headers["Origin"] = base_url
+                headers["Referer"] = f"{base_url}/"
+            # Try to extract platform tenant UUID from HTML data-tenant attribute
+            match = re.search(r'data-tenant="([^"]+)"', login_page.text)
+            if match:
+                platform_tenant_uuid = match.group(1)
+                logging.info("Curseduca platform tenant UUID from HTML: %s", platform_tenant_uuid)
+        except Exception as exc:
+            logging.debug("Curseduca: could not fetch login page: %s", exc)
+
         token = (credentials.get("token") or "").strip()
         if token:
             self._access_token = token
@@ -272,6 +332,9 @@ Para plataformas whitelabel Curseduca:
             self._current_login_id = (credentials.get("current_login_id") or "").strip()
 
             self._resolve_token_context(headers)
+
+            if platform_tenant_uuid:
+                self._resolve_platform_tenant(platform_tenant_uuid)
 
             self._configure_cookies(base_url)
             logging.info("Sessão autenticada na Curseduca via token.")
@@ -285,9 +348,6 @@ Para plataformas whitelabel Curseduca:
             )
         if not username or not password:
             raise ValueError("Usuário e senha são obrigatórios para Curseduca.")
-
-        login_page = self._session.get(f"{base_url}/login")
-        login_page.raise_for_status()
 
         auth_headers = headers | {"api_key": api_key, "Content-Type": "application/json"}
         login_response = self._session.post(
@@ -320,8 +380,38 @@ Para plataformas whitelabel Curseduca:
             logging.info("Curseduca: tenant info missing from login response, resolving from API...")
             self._resolve_token_context(headers)
 
+        if platform_tenant_uuid:
+            self._resolve_platform_tenant(platform_tenant_uuid)
+
         self._configure_cookies(base_url)
         logging.info("Sessão autenticada na Curseduca.")
+
+    def _resolve_platform_tenant(self, platform_tenant_uuid: str) -> None:
+        """Resolve the platform's tenant numeric ID from its UUID via /by/tenants."""
+        try:
+            auth_headers = {
+                "Authorization": f"Bearer {self._access_token}",
+                "api_key": self._api_key,
+                "Origin": self._base_url,
+                "Referer": f"{self._base_url}/",
+            }
+            resp = self._session.get(
+                "https://application.curseduca.pro/by/tenants",
+                headers=auth_headers,
+                params={"id": "", "slug": "", "uuid": platform_tenant_uuid},
+                timeout=30,
+            )
+            resp.raise_for_status()
+            tenant_data = resp.json()
+            self._platform_tenant_id = str(tenant_data.get("id", ""))
+            self._platform_tenant_uuid = platform_tenant_uuid
+            self._platform_tenant_slug = tenant_data.get("slug", "")
+            logging.info(
+                "Curseduca platform tenant resolved: id=%s, slug=%s, uuid=%s",
+                self._platform_tenant_id, self._platform_tenant_slug, self._platform_tenant_uuid,
+            )
+        except Exception as exc:
+            logging.warning("Curseduca: failed to resolve platform tenant: %s", exc)
 
     def _resolve_token_context(self, base_headers: Dict[str, str]) -> None:
         """Populate tenant and member data from API when authenticating via token."""
@@ -402,15 +492,19 @@ Para plataformas whitelabel Curseduca:
         domain = urlparse(base_url).netloc
         # Set cookies with explicit domain and path to ensure they're sent correctly
         cookie_params = {"domain": domain, "path": "/"}
+        # Prefer platform tenant over member tenant for cookies (they may differ)
+        effective_tenant_id = self._platform_tenant_id or self._tenant_id
+        effective_tenant_slug = self._platform_tenant_slug or self._tenant_slug
+        effective_tenant_uuid = self._platform_tenant_uuid or self._tenant_uuid
         self._session.cookies.set("access_token", self._access_token, **cookie_params)
         self._session.cookies.set("api_key", self._api_key, **cookie_params)
-        self._session.cookies.set("tenant_slug", self._tenant_slug, **cookie_params)
-        self._session.cookies.set("tenant_uuid", self._tenant_uuid, **cookie_params)
-        self._session.cookies.set("tenantId", self._tenant_id, **cookie_params)
+        self._session.cookies.set("tenant_slug", effective_tenant_slug, **cookie_params)
+        self._session.cookies.set("tenant_uuid", effective_tenant_uuid, **cookie_params)
+        self._session.cookies.set("tenantId", effective_tenant_id, **cookie_params)
         self._session.cookies.set("current_login_id", self._current_login_id, **cookie_params)
         self._session.cookies.set("platform_url", base_url, **cookie_params)
         self._session.cookies.set("language", "pt_BR", **cookie_params)
-        self._session.cookies.set("language_tenant", self._tenant_id or "1", **cookie_params)
+        self._session.cookies.set("language_tenant", effective_tenant_id or "1", **cookie_params)
 
         # Build and set the user cookie (required for page authentication)
         if self._member_data:
@@ -440,7 +534,10 @@ Para plataformas whitelabel Curseduca:
             "Content-Type": "application/json",
             "Origin": self._base_url,
             "Referer": f"{self._base_url}/",
+            "x-platform": "web",
         }
+        if self._platform_tenant_id or self._tenant_id:
+            headers["x-tenant-id"] = self._platform_tenant_id or self._tenant_id
 
         logging.info("Curseduca fetching courses from API: %s", COURSES_ACCESS_URL)
         response = self._session.get(COURSES_ACCESS_URL, headers=headers, params={"slug": ""})
@@ -488,7 +585,10 @@ Para plataformas whitelabel Curseduca:
         headers = {
             "Authorization": f"Bearer {self._access_token}",
             "api_key": self._api_key,
+            "x-platform": "web",
         }
+        if self._platform_tenant_id or self._tenant_id:
+            headers["x-tenant-id"] = self._platform_tenant_id or self._tenant_id
 
         result: Dict[str, Any] = {}
         for course in courses:
@@ -503,6 +603,17 @@ Para plataformas whitelabel Curseduca:
             if response.url != course_url:
                 logging.warning("Curseduca course page was redirected - cookies may not be working")
             response.raise_for_status()
+
+            # Extract platform tenant from course page if not yet resolved
+            if not self._platform_tenant_id:
+                tenant_match = re.search(r'data-tenant="([^"]+)"', response.text)
+                if tenant_match:
+                    pt_uuid = tenant_match.group(1)
+                    # Only resolve if it differs from the member tenant
+                    if pt_uuid != self._tenant_uuid:
+                        logging.info("Curseduca platform tenant UUID from course page: %s", pt_uuid)
+                        self._resolve_platform_tenant(pt_uuid)
+
             course_data = _extract_next_data(response.text)
             if not course_data:
                 logging.warning("Não foi possível extrair dados para o curso %s", course.get("name"))
@@ -526,7 +637,16 @@ Para plataformas whitelabel Curseduca:
         if not lesson_uuid:
             raise ValueError("Aula sem UUID/ID informada.")
 
-        headers = {"Authorization": f"Bearer {self._access_token}", "api_key": self._api_key, "Origin": self._base_url}
+        headers = {
+            "Authorization": f"Bearer {self._access_token}",
+            "api_key": self._api_key,
+            "Content-Type": "application/json",
+            "Origin": self._base_url,
+            "Referer": f"{self._base_url}/",
+            "x-platform": "web",
+        }
+        if self._platform_tenant_id or self._tenant_id:
+            headers["x-tenant-id"] = self._platform_tenant_id or self._tenant_id
         response = self._session.get(LESSON_WATCH_URL.format(lesson_uuid=lesson_uuid), headers=headers)
         response.raise_for_status()
         lesson_json = response.json()
@@ -543,11 +663,14 @@ Para plataformas whitelabel Curseduca:
                 video_url = f"https://player.vimeo.com/video/{video_id}"
             elif video_type == 4:
                 video_url = f"https://www.youtube.com/watch?v={video_id}"
+            elif video_type == 11:
+                # PandaVideo — videoId is already the HLS playlist URL
+                video_url = video_id
             elif video_type == 20:
                 # Curseduca native player — resolve HLS URL from player API
                 player_resp = self._session.get(
                     f"https://player.curseduca.pro/videos/{video_id}",
-                    params={"tenant": self._tenant_uuid, "api_key": self._api_key},
+                    params={"tenant": self._platform_tenant_uuid or self._tenant_uuid, "api_key": self._api_key},
                 )
                 player_resp.raise_for_status()
                 player_data = player_resp.json()
@@ -625,7 +748,10 @@ Para plataformas whitelabel Curseduca:
             "api_key": self._api_key,
             "Origin": self._base_url,
             "Referer": f"{self._base_url}/",
+            "x-platform": "web",
         }
+        if self._platform_tenant_id or self._tenant_id:
+            headers["x-tenant-id"] = self._platform_tenant_id or self._tenant_id
 
         try:
             response = self._session.get(attachment.url, headers=headers, stream=True, timeout=60)
