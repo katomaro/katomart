@@ -469,14 +469,15 @@ class HotmartDownloader(BaseDownloader):
                         
                         logging.info(f"Descriptografando {os.path.basename(enc_file)}...")
                         try:
-                            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                                           **({"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}))
                             decrypted_files.append(dec_file)
                         except subprocess.CalledProcessError as e:
                             logging.error(f"Erro na descriptografia: {e.stderr.decode(errors='replace')}")
                             return False
 
                     temp_output_file = str(temp_path / f"{temp_base_name}.mp4")
-                    
+
                     ffmpeg_exe = get_executable_path("ffmpeg", getattr(self.settings, "ffmpeg_path", None))
                     if not ffmpeg_exe:
                         logging.error("ffmpeg não encontrado. Verifique se o caminho está configurado corretamente ou se está no PATH.")
@@ -489,7 +490,8 @@ class HotmartDownloader(BaseDownloader):
 
                     logging.info(f"Unindo arquivos...")
                     try:
-                        subprocess.run(cmd_merge, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                        subprocess.run(cmd_merge, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                                       **({"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}))
                     except subprocess.CalledProcessError as e:
                         logging.error(f"Erro ao unir arquivos: {e.stderr.decode(errors='replace')}")
                         return False

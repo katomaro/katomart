@@ -341,7 +341,8 @@ class UdemyDownloader(BaseDownloader):
 
                 logging.info(f"Descriptografando {os.path.basename(enc_file)}...")
                 try:
-                    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                                   **({"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}))
                     decrypted_files.append(dec_file)
                 except subprocess.CalledProcessError as e:
                     logging.error(f"Erro na descriptografia: {e.stderr.decode(errors='replace')}")
@@ -361,7 +362,8 @@ class UdemyDownloader(BaseDownloader):
 
             logging.info("Unindo arquivos...")
             try:
-                subprocess.run(cmd_merge, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                subprocess.run(cmd_merge, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                               **({"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}))
             except subprocess.CalledProcessError as e:
                 logging.error(f"Erro ao unir arquivos: {e.stderr.decode(errors='replace')}")
                 return False
