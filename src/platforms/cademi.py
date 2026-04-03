@@ -4,7 +4,7 @@ import logging
 import re
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 from bs4 import BeautifulSoup
@@ -30,6 +30,8 @@ class CademiPlatform(BasePlatform):
         super().__init__(api_service, settings_manager)
         self._site_url: str = ""
 
+    _SESSION_COOKIE_PATTERN = re.compile(r"^app_v([1-6])_session$")
+
     @classmethod
     def auth_fields(cls) -> List[AuthField]:
         return [
@@ -47,8 +49,9 @@ class CademiPlatform(BasePlatform):
         return """Para autenticacao manual (Token):
 1) Acesse sua area de membros (ex: https://seusite.cademi.com.br) e faca login.
 2) Abra o DevTools (F12) > aba Application > Cookies.
-3) Copie o valor do cookie "app_v4_session".
-4) Cole no campo de token.
+3) Identifique o cookie de sessao (ex: app_v1_session ate app_v6_session).
+4) Cole no campo de token no formato: cookie_name:value
+   Exemplo: app_v4_session:SEU_VALOR_AQUI
 
 Assinantes ativos podem informar usuario/senha para login automatico.
 """.strip()
@@ -65,6 +68,39 @@ Assinantes ativos podem informar usuario/senha para login automatico.
 
         token = self.resolve_access_token(credentials, self._exchange_credentials_for_token)
         self._configure_session(token)
+
+    def _parse_session_token(self, token: str) -> Tuple[str, str]:
+        """Parses token input in cookie_name:value format for Cademi session cookies."""
+        raw = (token or "").strip()
+        if not raw:
+            raise ValueError("Token de sessao invalido. Informe no formato cookie_name:value.")
+
+        # Accept common copy/paste variants:
+        # - app_v4_session:VALUE
+        # - app_v4_session=VALUE
+        # - Cookie: foo=1; app_v4_session=VALUE; bar=2
+        cookie_header_matches = re.findall(r"(app_v[1-6]_session)\s*=\s*([^;\s]+)", raw)
+        if cookie_header_matches:
+            cookie_name, cookie_value = cookie_header_matches[-1]
+            return cookie_name, cookie_value
+
+        match = re.match(r"^(app_v[1-6]_session)\s*[:=]\s*(.+)$", raw)
+        if match:
+            cookie_name = match.group(1).strip()
+            cookie_value = match.group(2).strip()
+            if cookie_value:
+                return cookie_name, cookie_value
+
+        raise ValueError(
+            "Token Cademi invalido. Use o formato cookie_name:value, por exemplo "
+            "app_v4_session:SEU_VALOR."
+        )
+
+    def _extract_cademi_session_cookie(self, session: requests.Session) -> Optional[Tuple[str, str]]:
+        for cookie in session.cookies:
+            if self._SESSION_COOKIE_PATTERN.match(cookie.name) and cookie.value:
+                return cookie.name, cookie.value
+        return None
 
     def _exchange_credentials_for_token(
         self, username: str, password: str, credentials: Dict[str, Any]
@@ -100,20 +136,26 @@ Assinantes ativos podem informar usuario/senha para login automatico.
         if "/auth/login" in resp.url:
             raise ConnectionError("Falha ao autenticar na Cademi. Verifique suas credenciais.")
 
-        session_cookie = session.cookies.get("app_v4_session")
+        session_cookie = self._extract_cademi_session_cookie(session)
         if not session_cookie:
-            raise ConnectionError("Login realizado mas cookie de sessao nao encontrado.")
+            raise ConnectionError(
+                "Login realizado mas cookie de sessao Cademi (app_v1_session ate app_v6_session) nao encontrado."
+            )
+
+        cookie_name, cookie_value = session_cookie
 
         self._login_session = session
-        return session_cookie
+        return f"{cookie_name}:{cookie_value}"
 
     def _configure_session(self, token: str) -> None:
+        cookie_name, cookie_value = self._parse_session_token(token)
+
         if hasattr(self, "_login_session") and self._login_session:
             self._session = self._login_session
             self._login_session = None
         else:
             self._session = requests.Session()
-            self._session.cookies.set("app_v4_session", token)
+            self._session.cookies.set(cookie_name, cookie_value)
 
         self._session.headers.update({
             "User-Agent": self._settings.user_agent,
@@ -124,7 +166,8 @@ Assinantes ativos podem informar usuario/senha para login automatico.
         resp = self._session.get(f"{self._site_url}/area/vitrine", timeout=30, allow_redirects=True)
         if "/auth/login" in resp.url:
             raise ConnectionError(
-                "Falha ao autenticar na Cademi. Verifique o cookie app_v4_session."
+                "Falha ao autenticar na Cademi. Verifique o token no formato cookie_name:value "
+                "(ex: app_v4_session:SEU_VALOR)."
             )
         logger.info("Cademi: authenticated successfully")
 
