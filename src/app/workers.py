@@ -543,6 +543,18 @@ class DownloadWorker(QRunnable):
             ]
         )
 
+    def _skip_if_file_exists(self, path: Path, content_type: str) -> bool:
+        """Check if a file already exists on disk when skip_existing_files is enabled.
+
+        For videos, uses stem-matching via _find_downloaded_media since
+        downloaders like yt-dlp may append extensions automatically.
+        """
+        if not getattr(self.settings, "skip_existing_files", False):
+            return False
+        if content_type == "video":
+            return self._find_downloaded_media(path) is not None
+        return path.exists()
+
     def _find_downloaded_media(self, expected_path: Path) -> Optional[Path]:
         """Resolve the actual path of a downloaded media file.
 
@@ -972,88 +984,96 @@ class DownloadWorker(QRunnable):
                                         description_path = lesson_path / "Descrição.txt"
                                     else:
                                         description_path = lesson_path / "Descrição.html"
-                                    try:
-                                        with open(description_path, 'w', encoding='utf-8') as desc_file:
-                                            desc_file.write(lesson_details.description.text)
+                                    if self._skip_if_file_exists(description_path, "description"):
+                                        self.signals.result.emit(
+                                            "      - [DISCO] Descrição já existe no disco. Pulando."
+                                        )
                                         self._mark_resume_status(
                                             course_id_str, module_key, lesson_key, "description", None, True
                                         )
-                                    except Exception as exc:
-                                        logging.error("Falha ao salvar descrição: %s", exc, exc_info=True)
-                                        self._mark_resume_status(
-                                            course_id_str, module_key, lesson_key, "description", None, False
-                                        )
-                                        raise
+                                    else:
+                                        try:
+                                            with open(description_path, 'w', encoding='utf-8') as desc_file:
+                                                desc_file.write(lesson_details.description.text)
+                                            self._mark_resume_status(
+                                                course_id_str, module_key, lesson_key, "description", None, True
+                                            )
+                                        except Exception as exc:
+                                            logging.error("Falha ao salvar descrição: %s", exc, exc_info=True)
+                                            self._mark_resume_status(
+                                                course_id_str, module_key, lesson_key, "description", None, False
+                                            )
+                                            raise
 
-                                    if self.settings.download_embedded_videos:
-                                        desc_html = lesson_details.description.text or ""
-                                        found_urls = []
-                                        found_urls.extend(re.findall(r'<iframe[^>]+src=["\']([^"\']+)["\']', desc_html, flags=re.I))
-                                        found_urls.extend(re.findall(r'<video[^>]+src=["\']([^"\']+)["\']', desc_html, flags=re.I))
-                                        found_urls.extend(re.findall(r'<source[^>]+src=["\']([^"\']+)["\']', desc_html, flags=re.I))
-                                        found_urls.extend(re.findall(r'href=["\'](https?://[^"\']+)["\']', desc_html, flags=re.I))
-                                        found_urls.extend(re.findall(r'https?://[^\s"\'<>]+', desc_html, flags=re.I))
+                                        if self.settings.download_embedded_videos:
+                                            desc_html = lesson_details.description.text or ""
+                                            found_urls = []
+                                            found_urls.extend(re.findall(r'<iframe[^>]+src=["\']([^"\']+)["\']', desc_html, flags=re.I))
+                                            found_urls.extend(re.findall(r'<video[^>]+src=["\']([^"\']+)["\']', desc_html, flags=re.I))
+                                            found_urls.extend(re.findall(r'<source[^>]+src=["\']([^"\']+)["\']', desc_html, flags=re.I))
+                                            found_urls.extend(re.findall(r'href=["\'](https?://[^"\']+)["\']', desc_html, flags=re.I))
+                                            found_urls.extend(re.findall(r'https?://[^\s"\'<>]+', desc_html, flags=re.I))
 
-                                        normalized = []
-                                        for u in found_urls:
-                                            if not u:
-                                                continue
-                                            u = html.unescape(u) 
-                                            if u.startswith('//'):
-                                                u = 'https:' + u
-                                            if u.startswith('javascript:') or u.startswith('mailto:') or u.startswith('#'):
-                                                continue
-                                            if u not in normalized:
-                                                normalized.append(u)
-
-                                        if normalized:
-                                            for emb_idx, emb_url in enumerate(normalized, start=1):
-                                                emb_name = f"{emb_idx}. e_Aula"
-                                                emb_name = truncate_filename_preserve_ext(emb_name, getattr(self.settings, 'max_file_name_length', 30))
-                                                emb_path = lesson_path / emb_name
-                                                logging.info(f"Baixando Conteudo linkado '{emb_url}' para '{emb_path}'")
-                                                try:
-                                                    parsed_emb = urlparse(emb_url)
-                                                    emb_domain = (parsed_emb.netloc or "").lower()
-                                                    if emb_domain.startswith("www."):
-                                                        emb_domain = emb_domain[4:]
-                                                except Exception:
-                                                    emb_domain = ""
-
-                                                blacklist: List[str] = getattr(self.settings, "embed_domain_blacklist", []) or []
-                                                is_blacklisted = any(
-                                                    emb_domain == b or emb_domain.endswith("." + b)
-                                                    for b in blacklist
-                                                )
-                                                if is_blacklisted:
-                                                    self.signals.result.emit(
-                                                        f"    - [PULADO] URL embed blacklist: {emb_url}"
-                                                    )
+                                            normalized = []
+                                            for u in found_urls:
+                                                if not u:
                                                     continue
+                                                u = html.unescape(u)
+                                                if u.startswith('//'):
+                                                    u = 'https:' + u
+                                                if u.startswith('javascript:') or u.startswith('mailto:') or u.startswith('#'):
+                                                    continue
+                                                if u not in normalized:
+                                                    normalized.append(u)
 
-                                                downloader = DownloaderFactory.get_downloader(emb_url, self.settings_manager)
-                                                try:
-                                                    extra_props = {}
-                                                    if self.platform_name.lower() == "hotmart" and course_slug:
-                                                        extra_props["referer"] = f"https://{course_slug}.club.hotmart.com/"
+                                            if normalized:
+                                                for emb_idx, emb_url in enumerate(normalized, start=1):
+                                                    emb_name = f"{emb_idx}. e_Aula"
+                                                    emb_name = truncate_filename_preserve_ext(emb_name, getattr(self.settings, 'max_file_name_length', 30))
+                                                    emb_path = lesson_path / emb_name
+                                                    logging.info(f"Baixando Conteudo linkado '{emb_url}' para '{emb_path}'")
+                                                    try:
+                                                        parsed_emb = urlparse(emb_url)
+                                                        emb_domain = (parsed_emb.netloc or "").lower()
+                                                        if emb_domain.startswith("www."):
+                                                            emb_domain = emb_domain[4:]
+                                                    except Exception:
+                                                        emb_domain = ""
 
-                                                    self._run_with_retries(
-                                                        lambda: downloader.download_video(
-                                                            emb_url, self.platform.get_session(), emb_path, extra_props=extra_props
-                                                        ),
-                                                        description=f"Download do Conteudo linkado '{emb_name}'",
+                                                    blacklist: List[str] = getattr(self.settings, "embed_domain_blacklist", []) or []
+                                                    is_blacklisted = any(
+                                                        emb_domain == b or emb_domain.endswith("." + b)
+                                                        for b in blacklist
                                                     )
-                                                    self.signals.result.emit(f"    - Conteudo linkado baixado: {emb_name}")
-                                                    self._maybe_transcribe_video(emb_path)
-                                                except Exception as e:
-                                                    logging.error(
-                                                        f"Erro ao baixar Conteudo linkado {emb_url}: {e}",
-                                                        exc_info=True,
-                                                    )
-                                                    self.signals.result.emit(
-                                                        f"    - [ERROR] Falha ao baixar link encontrado (pode ser propaganda, etc): {emb_url}"
-                                                    )
-                                    self.signals.result.emit(f"      - Descrição salva em {description_path}")
+                                                    if is_blacklisted:
+                                                        self.signals.result.emit(
+                                                            f"    - [PULADO] URL embed blacklist: {emb_url}"
+                                                        )
+                                                        continue
+
+                                                    downloader = DownloaderFactory.get_downloader(emb_url, self.settings_manager)
+                                                    try:
+                                                        extra_props = {}
+                                                        if self.platform_name.lower() == "hotmart" and course_slug:
+                                                            extra_props["referer"] = f"https://{course_slug}.club.hotmart.com/"
+
+                                                        self._run_with_retries(
+                                                            lambda: downloader.download_video(
+                                                                emb_url, self.platform.get_session(), emb_path, extra_props=extra_props
+                                                            ),
+                                                            description=f"Download do Conteudo linkado '{emb_name}'",
+                                                        )
+                                                        self.signals.result.emit(f"    - Conteudo linkado baixado: {emb_path.resolve()}")
+                                                        self._maybe_transcribe_video(emb_path)
+                                                    except Exception as e:
+                                                        logging.error(
+                                                            f"Erro ao baixar Conteudo linkado {emb_url}: {e}",
+                                                            exc_info=True,
+                                                        )
+                                                        self.signals.result.emit(
+                                                            f"    - [ERROR] Falha ao baixar link encontrado (pode ser propaganda, etc): {emb_url}"
+                                                        )
+                                        self.signals.result.emit(f"      - Descrição salva em {description_path.resolve()}")
 
                             if getattr(self.settings, "skip_video_download", False):
                                 self.signals.result.emit("    - [CONFIG] Pulando download de vídeos principais (configuração ativa).")
@@ -1077,6 +1097,18 @@ class DownloadWorker(QRunnable):
                                         ))
                                         continue
 
+                                    if self._skip_if_file_exists(video_path, "video"):
+                                        self.signals.result.emit(
+                                            f"    - [DISCO] Vídeo já existe no disco: {video_name}"
+                                        )
+                                        self._mark_resume_status(
+                                            course_id_str, module_key, lesson_key, "videos", video_key, True
+                                        )
+                                        lesson_report.videos.append(ItemDownloadResult(
+                                            name=video_name, status="skipped",
+                                        ))
+                                        continue
+
                                     try:
                                         self._run_with_retries(
                                             lambda: downloader.download_video(
@@ -1088,7 +1120,7 @@ class DownloadWorker(QRunnable):
                                         self._mark_resume_status(
                                             course_id_str, module_key, lesson_key, "videos", video_key, True
                                         )
-                                        self.signals.result.emit(f"    - Vídeo baixado: {video_name}")
+                                        self.signals.result.emit(f"    - Vídeo baixado: {last_downloaded_video_path.resolve()}")
                                         lesson_report.videos.append(ItemDownloadResult(
                                             name=video_name, status="success",
                                         ))
@@ -1149,6 +1181,18 @@ class DownloadWorker(QRunnable):
                                         ))
                                         continue
 
+                                    if self._skip_if_file_exists(attachment_path, "attachment"):
+                                        self.signals.result.emit(
+                                            f"    - [DISCO] Anexo já existe no disco: {attachment.filename}"
+                                        )
+                                        self._mark_resume_status(
+                                            course_id_str, module_key, lesson_key, "attachments", attachment_key, True
+                                        )
+                                        lesson_report.attachments.append(ItemDownloadResult(
+                                            name=attachment.filename, status="skipped",
+                                        ))
+                                        continue
+
                                     try:
                                         self._run_with_retries(
                                             lambda: self.platform.download_attachment(
@@ -1159,7 +1203,7 @@ class DownloadWorker(QRunnable):
                                         self._mark_resume_status(
                                             course_id_str, module_key, lesson_key, "attachments", attachment_key, True
                                         )
-                                        self.signals.result.emit(f"    - Anexo baixado: {attachment.filename}")
+                                        self.signals.result.emit(f"    - Anexo baixado: {attachment_path.resolve()}")
                                         lesson_report.attachments.append(ItemDownloadResult(
                                             name=attachment.filename, status="success",
                                         ))
@@ -1188,6 +1232,13 @@ class DownloadWorker(QRunnable):
                                         self.signals.result.emit(
                                             "      - Links extras já salvos anteriormente. Pulando geração do arquivo."
                                         )
+                                    elif self._skip_if_file_exists(aux_path, "auxiliary"):
+                                        self.signals.result.emit(
+                                            "      - [DISCO] Links extras já existem no disco. Pulando."
+                                        )
+                                        self._mark_resume_status(
+                                            course_id_str, module_key, lesson_key, "auxiliary_urls", None, True
+                                        )
                                     else:
                                         try:
                                             with open(aux_path, 'w', encoding='utf-8') as aux_file:
@@ -1206,7 +1257,7 @@ class DownloadWorker(QRunnable):
                                                 course_id_str, module_key, lesson_key, "auxiliary_urls", None, False
                                             )
                                             raise
-                                    self.signals.result.emit(f"      - URL auxiliar salva em {aux_path}")
+                                    self.signals.result.emit(f"      - URL auxiliar salva em {aux_path.resolve()}")
                             
                             watch_behavior = getattr(self.settings, "lesson_watch_status_behavior", "none")
                             mark_as_watched_bool = None

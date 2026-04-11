@@ -78,6 +78,7 @@ class AppSettings:
     skip_description_download: bool = False
     skip_auxiliary_urls_download: bool = False
     skip_attachment_download: bool = False
+    skip_existing_files: bool = False
     youtube_cookies_path: str = ""
     pause_on_partial_count: int = 0
     pause_on_error_count: int = 0
@@ -145,6 +146,8 @@ class SettingsManager:
             "skip_description_download": default.skip_description_download,
             "skip_auxiliary_urls_download": default.skip_auxiliary_urls_download,
             "skip_attachment_download": default.skip_attachment_download,
+            "skip_existing_files": default.skip_existing_files,
+            "try_keep_original_video_name": default.try_keep_original_video_name,
         }
         return replace(settings, **paid_only_fields)
 
@@ -201,6 +204,8 @@ class SettingsManager:
                 "skip_description_download",
                 "skip_auxiliary_urls_download",
                 "skip_attachment_download",
+                "skip_existing_files",
+                "try_keep_original_video_name",
             }
 
             cached_premium_values = {

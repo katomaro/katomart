@@ -62,7 +62,7 @@ class BaseDownloader(ABC):
         prefer_original_name = bool(getattr(settings, "try_keep_original_video_name", False))
 
         if prefer_original_name:
-            stem = download_path.stem
+            stem = download_path.name
             match = re.match(r"^(\d+\.\s*)", stem)
             if match:
                 output_stem = f"{match.group(1)}%(title).200B"

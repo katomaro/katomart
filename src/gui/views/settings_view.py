@@ -244,7 +244,7 @@ class SettingsView(QWidget):
 
         self.keep_audio_only_check = QCheckBox("Manter Apenas Áudio")
         self.try_keep_original_video_name_check = QCheckBox(
-            "Tentar manter nome original dos vídeos (mantendo o enumerador)"
+            "Tentar manter nome original dos vídeos (nao recomendado)"
         )
         self.delete_folder_on_error_check = QCheckBox("Excluir pasta da aula em caso de erro")
         self.allowed_extensions_edit = QTextEdit()
@@ -284,7 +284,6 @@ class SettingsView(QWidget):
         self._form_layout.addRow(self.download_embedded_check)
         self._form_layout.addRow("Idioma do Áudio (Em caso de múltiplos áudios):", self.audio_lang_combo)
         self._form_layout.addRow(self.keep_audio_only_check)
-        self._form_layout.addRow(self.try_keep_original_video_name_check)
         self._form_layout.addRow(self.delete_folder_on_error_check)
         self._form_layout.addRow("Caminho do FFmpeg:", self.ffmpeg_path_edit)
         self._form_layout.addRow("Caminho do Bento4 SDK:", self.bento4_path_edit)
@@ -445,6 +444,7 @@ class SettingsView(QWidget):
         )
         self._update_whisper_fields_state(False)
 
+        self._paid_form_layout.addRow(self.try_keep_original_video_name_check)
         self.skip_video_download_check = QCheckBox("Não baixar vídeos (Ignora vídeos da descrição)")
         self._paid_form_layout.addRow(self.skip_video_download_check)
         self.skip_description_download_check = QCheckBox("Não salvar descrições das aulas")
@@ -453,6 +453,8 @@ class SettingsView(QWidget):
         self._paid_form_layout.addRow(self.skip_auxiliary_urls_download_check)
         self.skip_attachment_download_check = QCheckBox("Não baixar anexos (sobrescreve a whitelist de extensões)")
         self._paid_form_layout.addRow(self.skip_attachment_download_check)
+        self.skip_existing_files_check = QCheckBox("Pular arquivos ja baixados (verifica se o arquivo existe no disco)")
+        self._paid_form_layout.addRow(self.skip_existing_files_check)
 
         self._paid_form_layout.addRow("User Agent:", self.user_agent_edit)
         self._paid_form_layout.addRow(
@@ -601,6 +603,7 @@ class SettingsView(QWidget):
         self.skip_description_download_check.setChecked(getattr(settings, "skip_description_download", False))
         self.skip_auxiliary_urls_download_check.setChecked(getattr(settings, "skip_auxiliary_urls_download", False))
         self.skip_attachment_download_check.setChecked(getattr(settings, "skip_attachment_download", False))
+        self.skip_existing_files_check.setChecked(getattr(settings, "skip_existing_files", False))
 
         self._update_whisper_fields_state(settings.use_whisper_transcription)
         self._update_paid_settings_state(settings)
@@ -689,6 +692,7 @@ class SettingsView(QWidget):
             skip_description_download=self.skip_description_download_check.isChecked(),
             skip_auxiliary_urls_download=self.skip_auxiliary_urls_download_check.isChecked(),
             skip_attachment_download=self.skip_attachment_download_check.isChecked(),
+            skip_existing_files=self.skip_existing_files_check.isChecked(),
             pause_on_partial_count=self.pause_on_partial_spin.value(),
             pause_on_error_count=self.pause_on_error_spin.value(),
         )
