@@ -445,7 +445,7 @@ class SettingsView(QWidget):
         self._update_whisper_fields_state(False)
 
         self._paid_form_layout.addRow(self.try_keep_original_video_name_check)
-        self.skip_video_download_check = QCheckBox("Não baixar vídeos (Ignora vídeos da descrição)")
+        self.skip_video_download_check = QCheckBox("Não baixar vídeos principais das aulas")
         self._paid_form_layout.addRow(self.skip_video_download_check)
         self.skip_description_download_check = QCheckBox("Não salvar descrições das aulas")
         self._paid_form_layout.addRow(self.skip_description_download_check)
