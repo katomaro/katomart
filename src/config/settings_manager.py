@@ -54,6 +54,7 @@ class AppSettings:
     whisper_model: str = "base"
     whisper_language: str = "auto"
     whisper_output_format: str = "srt"
+    whisper_parallel_transcription: bool = False
     max_course_name_length: int = 40
     max_module_name_length: int = 60
     max_lesson_name_length: int = 60
@@ -137,6 +138,7 @@ class SettingsManager:
             "whisper_model": default.whisper_model,
             "whisper_language": default.whisper_language,
             "whisper_output_format": default.whisper_output_format,
+            "whisper_parallel_transcription": default.whisper_parallel_transcription,
             "create_resume_summary": default.create_resume_summary,
             "allowed_attachment_extensions": default.allowed_attachment_extensions,
             "skip_video_download": default.skip_video_download,
@@ -192,6 +194,7 @@ class SettingsManager:
                 "whisper_model",
                 "whisper_language",
                 "whisper_output_format",
+            "whisper_parallel_transcription",
                 "create_resume_summary",
                 "allowed_attachment_extensions",
                 "skip_video_download",

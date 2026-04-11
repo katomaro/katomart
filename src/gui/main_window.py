@@ -15,6 +15,7 @@ from src.gui.views.settings_view import SettingsView
 from src.platforms.base import PlatformFactory, BasePlatform
 from src.app.workers import FetchCoursesWorker, FetchModulesWorker, DownloadWorker
 from src.app.version_checker import VersionCheckWorker
+from src.utils.filesystem import get_executable_path
 from src.utils.resume_manager import ResumeManager
 from src.web.app import DashboardServer
 
@@ -45,6 +46,7 @@ class MainWindow(QMainWindow):
         self._connect_signals()
         QTimer.singleShot(0, self._show_subscription_prompt)
         QTimer.singleShot(0, self._start_version_check)
+        QTimer.singleShot(0, self._check_ffmpeg_availability)
 
     def _setup_views(self) -> None:
         """Creates and adds all views to the stacked widget."""
@@ -76,6 +78,19 @@ class MainWindow(QMainWindow):
             "Visite https://katomaro.com/store/katomart e conhe\u00e7a os benefícios. Uma janela no seu navegador foi aberta para você verificar."
         )
         QMessageBox.information(self, "Suporte o Katomart!", message)
+
+    def _check_ffmpeg_availability(self) -> None:
+        """Warns the user on startup if ffmpeg is not accessible."""
+        settings = self._settings_manager.get_settings()
+        if get_executable_path("ffmpeg", settings.ffmpeg_path) is None:
+            logging.warning("FFmpeg não encontrado no caminho configurado nem no PATH do sistema.")
+            QMessageBox.warning(
+                self,
+                "FFmpeg não encontrado",
+                "O FFmpeg não foi encontrado no caminho configurado nem no PATH do sistema.\n\n"
+                "Sem o FFmpeg, vídeos baixados podem ficar corrompidos ou malformados.\n"
+                "Configure o caminho correto nas Configurações ou instale o FFmpeg no sistema.",
+            )
 
     def _connect_signals(self) -> None:
         """Connects signals between views and workers."""

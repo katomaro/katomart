@@ -20,9 +20,12 @@ from PySide6.QtWidgets import (
     QSizePolicy,
 )
 
+from pathlib import Path
+
 from src.app.membership_service import MembershipService
 from src.config.settings_manager import AppSettings, SettingsManager
 from src.gui.widgets import PlatformTagsWidget
+from src.utils.filesystem import get_executable_path
 from urllib.parse import urlparse
 
 
@@ -265,6 +268,7 @@ class SettingsView(QWidget):
         )
 
         self.download_widevine_check = QCheckBox("Baixar Widevine")
+        self.download_widevine_check.toggled.connect(self._on_download_widevine_toggled)
 
         self._form_layout.addRow("Caminho para Download:", self.download_path_edit)
         self._form_layout.addRow("Qualidade do Vídeo:", self.video_quality_combo)
@@ -393,6 +397,10 @@ class SettingsView(QWidget):
         for name, code in self.whisper_output_formats.items():
             self.whisper_output_format_combo.addItem(name, userData=code)
 
+        self.whisper_parallel_transcription_check = QCheckBox(
+            "Transcrever em paralelo ao download (não bloquear downloads)"
+        )
+
         self.lesson_watch_status_combo = QComboBox()
         self.lesson_watch_status_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.lesson_watch_status_combo.setMaximumWidth(600)
@@ -432,6 +440,9 @@ class SettingsView(QWidget):
         self.use_whisper_transcription_check.toggled.connect(
             self._update_whisper_fields_state
         )
+        self.whisper_parallel_transcription_check.toggled.connect(
+            self._on_parallel_transcription_toggled
+        )
         self._update_whisper_fields_state(False)
 
         self.skip_video_download_check = QCheckBox("Não baixar vídeos (Ignora vídeos da descrição)")
@@ -469,6 +480,7 @@ class SettingsView(QWidget):
         self._paid_form_layout.addRow(
             "Formato da Transcrição:", self.whisper_output_format_combo
         )
+        self._paid_form_layout.addRow(self.whisper_parallel_transcription_check)
 
         self.embed_blacklist_edit = QTextEdit()
         self.embed_blacklist_edit.setPlaceholderText("example.com\ndocs.example.com\n...")
@@ -581,6 +593,10 @@ class SettingsView(QWidget):
         if output_format_index != -1:
             self.whisper_output_format_combo.setCurrentIndex(output_format_index)
 
+        self.whisper_parallel_transcription_check.setChecked(
+            getattr(settings, "whisper_parallel_transcription", False)
+        )
+
         self.skip_video_download_check.setChecked(getattr(settings, "skip_video_download", False))
         self.skip_description_download_check.setChecked(getattr(settings, "skip_description_download", False))
         self.skip_auxiliary_urls_download_check.setChecked(getattr(settings, "skip_auxiliary_urls_download", False))
@@ -643,6 +659,7 @@ class SettingsView(QWidget):
             whisper_model=self.whisper_model_combo.currentText(),
             whisper_language=self.whisper_language_combo.currentData(),
             whisper_output_format=self.whisper_output_format_combo.currentData(),
+            whisper_parallel_transcription=self.whisper_parallel_transcription_check.isChecked(),
             run_ffmpeg=current_settings.run_ffmpeg,
             ffmpeg_args=current_settings.ffmpeg_args,
             max_course_name_length=self.course_name_max_spin.value(),
@@ -803,6 +820,7 @@ class SettingsView(QWidget):
             self.whisper_model_combo,
             self.whisper_language_combo,
             self.whisper_output_format_combo,
+            self.whisper_parallel_transcription_check,
         ):
             widget.setEnabled(bool(enabled))
 
@@ -815,4 +833,61 @@ class SettingsView(QWidget):
                 "Salvar senha não é seguro pois aplicativos terceiros (ex: scripts para backup de terceiros) "
                 "podem procurar o arquivo do katomart (e também carteiras de criptomoedas) e os roubar."
             )
+
+    def _on_parallel_transcription_toggled(self, checked: bool) -> None:
+        """Warns the user about the resource cost of parallel transcription."""
+        if checked and self.isVisible():
+            QMessageBox.warning(
+                self,
+                "Aviso de Desempenho",
+                "A transcrição paralela é um processo muito pesado (uso intensivo de CPU/GPU). "
+                "Seu computador pode ficar lento durante o download.\n\n"
+                "Caso prefira, você pode transcrever vídeos individualmente pelo Dashboard "
+                "na tela principal, desde que não tenha movido o conteúdo após o download."
+            )
+
+    def _on_download_widevine_toggled(self, checked: bool) -> None:
+        """Validates Widevine dependencies when the user enables the option."""
+        if not checked or not self.isVisible():
+            return
+
+        missing = []
+
+        # Check CDM path
+        cdm_path_str = self.cdm_path_edit.text().strip()
+        if not cdm_path_str:
+            missing.append("CDM (caminho não configurado)")
+        else:
+            cdm_path = Path(cdm_path_str)
+            if not cdm_path.is_dir():
+                missing.append("CDM (caminho inválido ou pasta não encontrada)")
+            else:
+                has_wvd = any(cdm_path.glob("*.wvd"))
+                has_bin_pem = any(cdm_path.glob("*.bin")) and any(cdm_path.glob("*.pem"))
+                if not has_wvd and not has_bin_pem:
+                    missing.append("CDM (nenhum arquivo .wvd ou .bin+.pem encontrado)")
+
+        # Check mp4decrypt (Bento4)
+        bento4_path = self.bento4_path_edit.text().strip()
+        if get_executable_path("mp4decrypt", bento4_path) is None:
+            missing.append("mp4decrypt (Bento4)")
+
+        # Check ffmpeg
+        ffmpeg_path = self.ffmpeg_path_edit.text().strip()
+        if get_executable_path("ffmpeg", ffmpeg_path) is None:
+            missing.append("FFmpeg")
+
+        if missing:
+            items = "\n".join(f"  - {item}" for item in missing)
+            QMessageBox.warning(
+                self,
+                "Dependências não encontradas",
+                "Para baixar conteúdo Widevine, as seguintes dependências são necessárias "
+                "mas não foram encontradas:\n\n"
+                f"{items}\n\n"
+                "Verifique os caminhos configurados ou instale as ferramentas no sistema.",
+            )
+            self.download_widevine_check.blockSignals(True)
+            self.download_widevine_check.setChecked(False)
+            self.download_widevine_check.blockSignals(False)
 

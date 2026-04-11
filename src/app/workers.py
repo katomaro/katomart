@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import queue
 import re
 import subprocess
 import threading
@@ -118,6 +119,142 @@ class FetchModulesWorker(QRunnable):
             self.signals.finished.emit()
 
 
+class TranscriptionQueue:
+    """Background thread that processes transcription jobs sequentially.
+
+    The download thread pushes media paths into the queue via ``enqueue()``.
+    A dedicated daemon thread consumes them one at a time, sharing a single
+    loaded Whisper model instance.
+    """
+
+    _SENTINEL = None  # poison pill to signal shutdown
+
+    def __init__(self, settings, signals: WorkerSignals):
+        self._settings = settings
+        self._signals = signals
+        self._queue: queue.Queue = queue.Queue()
+        self._whisper_model = None
+        self._cancelled = False
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def enqueue(self, media_path: Path) -> None:
+        """Add a video path to the transcription queue."""
+        self._queue.put(media_path)
+
+    def cancel(self) -> None:
+        """Signal the transcription thread to stop after the current item."""
+        self._cancelled = True
+        self._queue.put(self._SENTINEL)
+
+    def finish_and_wait(self, timeout: float | None = None) -> None:
+        """Signal no more items and wait for the queue to drain."""
+        self._queue.put(self._SENTINEL)
+        self._thread.join(timeout=timeout)
+
+    def _load_whisper_model(self):
+        if self._whisper_model is None:
+            import whisper
+
+            self._whisper_model = whisper.load_model(self._settings.whisper_model)
+        return self._whisper_model
+
+    def _run(self) -> None:
+        """Main loop: process items from the queue until sentinel or cancelled."""
+        while not self._cancelled:
+            try:
+                item = self._queue.get(timeout=1.0)
+            except queue.Empty:
+                continue
+
+            if item is self._SENTINEL:
+                break
+
+            media_path: Path = item
+            try:
+                self._transcribe_single(media_path)
+            except Exception as exc:
+                logging.error(
+                    "Erro na transcrição paralela de %s: %s",
+                    media_path,
+                    exc,
+                    exc_info=True,
+                )
+                self._signals.result.emit(
+                    f"      - [ERROR] Falha na transcrição paralela: {media_path.name}"
+                )
+            finally:
+                self._queue.task_done()
+
+        # Drain remaining items without processing (on cancel)
+        while not self._queue.empty():
+            try:
+                self._queue.get_nowait()
+                self._queue.task_done()
+            except queue.Empty:
+                break
+
+    def _transcribe_single(self, media_path: Path) -> None:
+        """Extract audio and transcribe a single video file."""
+        from whisper.utils import get_writer
+
+        self._signals.result.emit(
+            f"      - [WHISPER] Iniciando transcrição paralela: {media_path.name}"
+        )
+
+        ffmpeg_exe = get_executable_path(
+            "ffmpeg", getattr(self._settings, "ffmpeg_path", None)
+        )
+        if not ffmpeg_exe:
+            raise FileNotFoundError("ffmpeg executable not found.")
+
+        audio_path = media_path.with_suffix(".wav")
+        cmd = [
+            ffmpeg_exe,
+            "-y",
+            "-i",
+            str(media_path),
+            "-vn",
+            "-acodec",
+            "pcm_s16le",
+            "-ar",
+            "16000",
+            str(audio_path),
+        ]
+        subprocess.run(
+            cmd,
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.STDOUT,
+            **({"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}),
+        )
+
+        model = self._load_whisper_model()
+        language = (
+            None
+            if self._settings.whisper_language == "auto"
+            else self._settings.whisper_language
+        )
+        if language and len(language) > 2 and "-" in language:
+            language = language.split("-")[0].lower()
+
+        result = model.transcribe(str(audio_path), language=language)
+        output_format = self._settings.whisper_output_format or "srt"
+        writer = get_writer(output_format, str(audio_path.parent))
+        writer_opts = {"language": language} if language else {}
+        writer(result, audio_path.stem, writer_opts)
+
+        generated = audio_path.parent / f"{audio_path.stem}.{output_format}"
+        if generated.exists():
+            self._signals.result.emit(
+                f"      - [WHISPER] Transcrição paralela gerada: {generated.name}"
+            )
+        else:
+            self._signals.result.emit(
+                "      - [WARNING] Whisper não gerou arquivo de transcrição (paralelo)."
+            )
+
+
 class DownloadWorker(QRunnable):
     """
     Worker to download files for the selected modules and lessons.
@@ -143,6 +280,7 @@ class DownloadWorker(QRunnable):
         self._retry_attempts = max(0, getattr(self.settings, "download_retry_attempts", 0))
         self._retry_delay_seconds = max(0, getattr(self.settings, "download_retry_delay_seconds", 0))
         self._whisper_model = None
+        self._transcription_queue: TranscriptionQueue | None = None
         self.platform_name = platform_name
         self.selected_courses = selected_courses or []
         self.resume_manager: ResumeManager | None = None
@@ -273,6 +411,8 @@ class DownloadWorker(QRunnable):
     def cancel(self) -> None:
         self._cancelled = True
         self._pause_event.set()
+        if self._transcription_queue is not None:
+            self._transcription_queue.cancel()
 
     def request_save_progress(self) -> None:
         self._save_requested = True
@@ -591,6 +731,15 @@ class DownloadWorker(QRunnable):
             )
             return
 
+        # Parallel mode: enqueue and return immediately
+        if self._transcription_queue is not None:
+            self._transcription_queue.enqueue(media_path)
+            self.signals.result.emit(
+                f"      - Vídeo enfileirado para transcrição paralela: {media_path.name}"
+            )
+            return
+
+        # Synchronous mode (original behavior)
         try:
             audio_path = self._extract_audio_from_video(media_path)
             transcription_path = self._transcribe_audio(audio_path)
@@ -633,6 +782,12 @@ class DownloadWorker(QRunnable):
                 raise ConnectionError("Download worker requires an authenticated session.")
 
             self._ensure_resume_state(session)
+
+            if (
+                self.settings.use_whisper_transcription
+                and getattr(self.settings, "whisper_parallel_transcription", False)
+            ):
+                self._transcription_queue = TranscriptionQueue(self.settings, self.signals)
 
             if self._history_manager:
                 try:
@@ -1196,6 +1351,13 @@ class DownloadWorker(QRunnable):
             self._finish_history_session("error")
             self.signals.error.emit((type(e), e, str(e)))
         finally:
+            if self._transcription_queue is not None:
+                if self._cancelled:
+                    self._transcription_queue.cancel()
+                else:
+                    self.signals.result.emit("Aguardando transcrições paralelas restantes...")
+                    self._transcription_queue.finish_and_wait()
+                    self.signals.result.emit("Todas as transcrições paralelas foram concluídas.")
             retry = self._build_retry_selection()
             if retry:
                 self.signals.retry_selection.emit(json.dumps(retry))
