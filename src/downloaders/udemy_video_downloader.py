@@ -388,7 +388,7 @@ class UdemyDownloader(BaseDownloader):
             http_headers[header_key] = value
 
         ydl_opts = {
-            'outtmpl': str(download_path) + ".%(ext)s",
+            'outtmpl': self.build_ytdlp_output_template(download_path, self.settings),
             'noplaylist': True,
             'http_headers': http_headers,
             'quiet': True,

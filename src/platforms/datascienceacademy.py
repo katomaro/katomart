@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 API_BASE = "https://www.datascienceacademy.com.br"
 PRODUCTS_URL = f"{API_BASE}/api/products_all"
-USER_COURSES_URL = f"{API_BASE}/api/user/courses-progress"
+USER_COURSES_URL = f"{API_BASE}/api/user/courses-progress?courses="
 COURSE_CONTENT_URL = f"{API_BASE}/api/course/{{slug}}?contents"
 
 
@@ -52,9 +52,45 @@ Como obter o token da Data Science Academy?
                 "User-Agent": self._settings.user_agent,
                 "Accept": "application/json, text/plain, */*",
                 "Origin": API_BASE,
-                "Referer": f"{API_BASE}/",
+                "Referer": f"{API_BASE}/start",
             }
         )
+        self._fetch_csrf_token()
+
+    def _fetch_csrf_token(self) -> None:
+        """Fetch the CSRF token from the /start page and add it to session headers.
+
+        LearnWorlds requires this token on API calls that return user-specific
+        data (e.g. courses-progress).  Without it the server returns empty
+        enrollment info.  The GET also captures any session cookies the server
+        sets, which may be required for authenticated API responses.
+        """
+        try:
+            # Use Accept: text/html so the server returns the HTML page (not JSON)
+            resp = self._session.get(
+                f"{API_BASE}/start",
+                headers={"Accept": "text/html,application/xhtml+xml,*/*"},
+                timeout=30,
+            )
+            resp.raise_for_status()
+            logger.info(
+                "DSA: /start respondeu status=%d content-type=%s body=%d bytes cookies=%s",
+                resp.status_code,
+                resp.headers.get("content-type", "?"),
+                len(resp.text),
+                list(self._session.cookies.keys()),
+            )
+            match = re.search(
+                r'<meta\s+name=["\']csrf-token["\']\s+content=["\'](.*?)["\']', resp.text
+            )
+            if match:
+                csrf_token = match.group(1)
+                self._session.headers["csrf-token"] = csrf_token
+                logger.info("DSA: csrf-token obtido com sucesso (%d chars)", len(csrf_token))
+            else:
+                logger.warning("DSA: csrf-token nao encontrado na pagina /start (body preview: %.200s)", resp.text[:800])
+        except Exception as exc:
+            logger.warning("DSA: falha ao obter csrf-token de /start: %s", exc)
 
     def _exchange_credentials_for_token(self, username: str, password: str, credentials: Dict[str, Any]) -> str:
         raise ConnectionError(
@@ -70,50 +106,70 @@ Como obter o token da Data Science Academy?
         data = response.json()
 
         courses_map = data.get("courses", {})
-        allowed_ids = set(data.get("allowedCourseIds") or [])
+        # allowed_ids = set(data.get("allowedCourseIds") or [])
 
-        # Fetch user enrollment data (premium/registered) from the dedicated endpoint.
-        # The products_all response does not populate me.premium for bundle-enrolled
-        # courses, so we must call user/courses-progress to get the real enrollment
-        # state.  The LearnWorlds frontend filters accessible courses using the same
-        # logic: me.premium || me.registered  (see getUserCoursesFiltered getter).
-        enrolled_ids: set = set()
-        try:
-            progress_resp = self._session.get(
-                USER_COURSES_URL, timeout=30
-            )
-            progress_resp.raise_for_status()
-            progress_data = progress_resp.json()
-            for uc in progress_data.get("userCourses") or []:
-                uc_me = uc.get("me", {})
-                if uc_me.get("premium") or uc_me.get("registered"):
-                    enrolled_ids.add(str(uc.get("courseId", "")))
-            logger.debug("DSA: courses-progress returned %d enrolled courses", len(enrolled_ids))
-        except Exception as exc:
-            logger.warning("DSA: failed to fetch user courses-progress: %s", exc)
+        # # Fetch user enrollment data (premium/registered) from the dedicated endpoint.
+        # # The products_all response does not populate me.premium for bundle-enrolled
+        # # courses, so we must call user/courses-progress to get the real enrollment
+        # # state.  The LearnWorlds frontend filters accessible courses using the same
+        # # logic: me.premium || me.registered  (see getUserCoursesFiltered getter).
+        # enrolled_ids: set = set()
+        # try:
+        #     progress_resp = self._session.get(
+        #         USER_COURSES_URL, timeout=30
+        #     )
+        #     progress_resp.raise_for_status()
+        #     progress_data = progress_resp.json()
+        #     user_courses = progress_data.get("userCourses") or []
+        #     logger.info("DSA: courses-progress retornou %d userCourses no total", len(user_courses))
+        #     for uc in user_courses:
+        #         uc_me = uc.get("me", {})
+        #         cid = str(uc.get("courseId", ""))
+        #         registered = uc_me.get("registered")
+        #         premium = uc_me.get("premium")
+        #         if premium or registered:
+        #             enrolled_ids.add(cid)
+        #             logger.info("DSA: courses-progress enrolled: id=%s registered=%s premium=%s", cid, registered, premium)
+        #     logger.info("DSA: courses-progress total enrolled (premium||registered): %d", len(enrolled_ids))
+        # except Exception as exc:
+        #     logger.warning("DSA: failed to fetch user courses-progress: %s", exc)
 
         courses: List[Dict[str, Any]] = []
 
+        logger.info("DSA: products_all retornou %d cursos no total", len(courses_map))
+        # logger.info("DSA: allowedCourseIds contem %d ids: %s", len(allowed_ids), sorted(allowed_ids))
+        # logger.info("DSA: courses-progress retornou %d enrolled ids: %s", len(enrolled_ids), sorted(enrolled_ids))
+
         for cid, course in courses_map.items():
-            me = course.get("me", {})
+            # me = course.get("me", {})
             course_id = str(course.get("id", cid))
-            is_registered = me.get("registered")
-            is_allowed = course_id in allowed_ids or cid in allowed_ids
-            is_free = course.get("status") == "free"
-            is_enrolled = course_id in enrolled_ids
-            if not is_registered and not is_allowed and not is_free and not is_enrolled:
-                continue
+            title = course.get("title", "Curso")
+            # is_registered = me.get("registered")
+            # is_premium = me.get("premium")
+            # is_allowed = course_id in allowed_ids or cid in allowed_ids
+            # is_free = course.get("status") == "free"
+            # is_enrolled = course_id in enrolled_ids
+            # status = course.get("status", "")
+
+            # logger.info(
+            #     "DSA: [%s] id=%s cid=%s | registered=%s premium=%s allowed=%s free=%s enrolled=%s status=%s",
+            #     title, course_id, cid, is_registered, is_premium, is_allowed, is_free, is_enrolled, status,
+            # )
+
+            # if not is_registered and not is_allowed and not is_free and not is_enrolled:
+            #     skipped.append(f"{title} (id={course_id})")
+            #     continue
 
             courses.append(
                 {
                     "id": course.get("id", cid),
-                    "name": course.get("title", "Curso"),
+                    "name": title,
                     "slug": course.get("titleId", cid),
                     "seller_name": "Data Science Academy",
                 }
             )
 
-        logger.debug("DSA: found %d accessible courses", len(courses))
+        logger.info("DSA: retornando todos os %d cursos sem filtro", len(courses))
         return sorted(courses, key=lambda c: c.get("name", ""))
 
     def fetch_course_content(self, courses: List[Dict[str, Any]]) -> Dict[str, Any]:

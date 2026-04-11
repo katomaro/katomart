@@ -507,7 +507,7 @@ class HotmartDownloader(BaseDownloader):
 
             retry_opts = build_ytdlp_retry_config(self.settings)
             ydl_opts = {
-                'outtmpl': str(download_path) + ".%(ext)s",
+                'outtmpl': self.build_ytdlp_output_template(download_path, self.settings),
                 'noplaylist': True,
                 'http_headers': {header: value for header, value in session.headers.items()},
                 'quiet': True,

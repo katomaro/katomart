@@ -420,6 +420,16 @@ class DownloadWorker(QRunnable):
             reverse=True,
         )
 
+        if not candidates:
+            prefix_match = re.match(r"^(\d+\.\s*)", expected_path.stem)
+            if prefix_match:
+                numbered_prefix = prefix_match.group(1)
+                candidates = sorted(
+                    expected_path.parent.glob(f"{numbered_prefix}*.*"),
+                    key=lambda p: p.stat().st_mtime,
+                    reverse=True,
+                )
+
         return candidates[0] if candidates else None
 
     def _extract_audio_from_video(self, media_path: Path) -> Path:
@@ -792,7 +802,12 @@ class DownloadWorker(QRunnable):
                                             f"{len(lesson_details.attachments)} anexo(s).")
 
                             if lesson_details.description:
-                                if self._should_skip_download(lesson_entry, "description"):
+                                if getattr(self.settings, "skip_description_download", False):
+                                    self.signals.result.emit("      - [CONFIG] Pulando descrição (configuração ativa).")
+                                    self._mark_resume_status(
+                                        course_id_str, module_key, lesson_key, "description", None, True
+                                    )
+                                elif self._should_skip_download(lesson_entry, "description"):
                                     self.signals.result.emit(
                                         "      - Descrição já registrada no resumo. Pulando download."
                                     )
@@ -914,7 +929,7 @@ class DownloadWorker(QRunnable):
                                             ),
                                             description=f"Download do vídeo '{video_name}'",
                                         )
-                                        last_downloaded_video_path = video_path
+                                        last_downloaded_video_path = self._find_downloaded_media(video_path) or video_path
                                         self._mark_resume_status(
                                             course_id_str, module_key, lesson_key, "videos", video_key, True
                                         )
@@ -936,98 +951,107 @@ class DownloadWorker(QRunnable):
                                             error_type=err_type, error_message=err_msg,
                                         ))
 
-                            for attachment_index, attachment in enumerate(lesson_details.attachments, start=1):
-                                attachment_order = attachment.order or attachment_index
-                                full_attachment_name = sanitize_path_component(attachment.filename)
-                                full_attachment_name = f"{attachment_order}. {full_attachment_name}"
-                                full_attachment_name = truncate_filename_preserve_ext(full_attachment_name, getattr(self.settings, 'max_file_name_length', 30))
-                                attachment_path = lesson_path / full_attachment_name
+                            if getattr(self.settings, "skip_attachment_download", False):
+                                self.signals.result.emit("    - [CONFIG] Pulando download de anexos (configuração ativa).")
+                            else:
+                                for attachment_index, attachment in enumerate(lesson_details.attachments, start=1):
+                                    attachment_order = attachment.order or attachment_index
+                                    full_attachment_name = sanitize_path_component(attachment.filename)
+                                    full_attachment_name = f"{attachment_order}. {full_attachment_name}"
+                                    full_attachment_name = truncate_filename_preserve_ext(full_attachment_name, getattr(self.settings, 'max_file_name_length', 30))
+                                    attachment_path = lesson_path / full_attachment_name
 
-                                allowed_exts = self.settings.allowed_attachment_extensions
-                                if allowed_exts:
-                                    normalized_exts = set()
-                                    for ext in allowed_exts:
-                                        ext = ext.strip().lower()
-                                        if ext:
-                                            if not ext.startswith("."):
-                                                ext = "." + ext
-                                            normalized_exts.add(ext)
-                                    
-                                    if normalized_exts:
-                                        file_ext = (attachment.extension or "").strip().lower()
-                                        if file_ext and not file_ext.startswith("."):
-                                            file_ext = "." + file_ext
+                                    allowed_exts = self.settings.allowed_attachment_extensions
+                                    if allowed_exts:
+                                        normalized_exts = set()
+                                        for ext in allowed_exts:
+                                            ext = ext.strip().lower()
+                                            if ext:
+                                                if not ext.startswith("."):
+                                                    ext = "." + ext
+                                                normalized_exts.add(ext)
 
-                                        if file_ext not in normalized_exts:
-                                            self.signals.result.emit(
-                                                f"    - [PULADO] Extensão não permitida: {attachment.filename}"
-                                            )
-                                            continue
+                                        if normalized_exts and ".*" not in normalized_exts:
+                                            file_ext = (attachment.extension or "").strip().lower()
+                                            if file_ext and not file_ext.startswith("."):
+                                                file_ext = "." + file_ext
 
-                                logging.info(f"Baixando Anexo '{attachment.filename}' para '{attachment_path}'")
-                                attachment_key = str(attachment.attachment_id or attachment_order)
+                                            if file_ext not in normalized_exts:
+                                                self.signals.result.emit(
+                                                    f"    - [PULADO] Extensão não permitida: {attachment.filename}"
+                                                )
+                                                continue
 
-                                if self._should_skip_download(lesson_entry, "attachments", attachment_key):
-                                    self.signals.result.emit(
-                                        f"    - Anexo já baixado previamente pelo resumo: {attachment.filename}"
-                                    )
-                                    lesson_report.attachments.append(ItemDownloadResult(
-                                        name=attachment.filename, status="skipped",
-                                    ))
-                                    continue
+                                    logging.info(f"Baixando Anexo '{attachment.filename}' para '{attachment_path}'")
+                                    attachment_key = str(attachment.attachment_id or attachment_order)
 
-                                try:
-                                    self._run_with_retries(
-                                        lambda: self.platform.download_attachment(
-                                            attachment, attachment_path, course_slug, course_id, module_id
-                                        ),
-                                        description=f"Download do anexo '{attachment.filename}'",
-                                    )
-                                    self._mark_resume_status(
-                                        course_id_str, module_key, lesson_key, "attachments", attachment_key, True
-                                    )
-                                    self.signals.result.emit(f"    - Anexo baixado: {attachment.filename}")
-                                    lesson_report.attachments.append(ItemDownloadResult(
-                                        name=attachment.filename, status="success",
-                                    ))
-                                except Exception as e:
-                                    err_type, err_msg = self._classify_error(e)
-                                    self._mark_resume_status(
-                                        course_id_str, module_key, lesson_key, "attachments", attachment_key, False
-                                    )
-                                    self.signals.result.emit(
-                                        f"    - [ERROR] Falha ao baixar anexo: {attachment.filename} ({err_type})"
-                                    )
-                                    lesson_report.attachments.append(ItemDownloadResult(
-                                        name=attachment.filename, status="error",
-                                        error_type=err_type, error_message=err_msg,
-                                    ))
+                                    if self._should_skip_download(lesson_entry, "attachments", attachment_key):
+                                        self.signals.result.emit(
+                                            f"    - Anexo já baixado previamente pelo resumo: {attachment.filename}"
+                                        )
+                                        lesson_report.attachments.append(ItemDownloadResult(
+                                            name=attachment.filename, status="skipped",
+                                        ))
+                                        continue
+
+                                    try:
+                                        self._run_with_retries(
+                                            lambda: self.platform.download_attachment(
+                                                attachment, attachment_path, course_slug, course_id, module_id
+                                            ),
+                                            description=f"Download do anexo '{attachment.filename}'",
+                                        )
+                                        self._mark_resume_status(
+                                            course_id_str, module_key, lesson_key, "attachments", attachment_key, True
+                                        )
+                                        self.signals.result.emit(f"    - Anexo baixado: {attachment.filename}")
+                                        lesson_report.attachments.append(ItemDownloadResult(
+                                            name=attachment.filename, status="success",
+                                        ))
+                                    except Exception as e:
+                                        err_type, err_msg = self._classify_error(e)
+                                        self._mark_resume_status(
+                                            course_id_str, module_key, lesson_key, "attachments", attachment_key, False
+                                        )
+                                        self.signals.result.emit(
+                                            f"    - [ERROR] Falha ao baixar anexo: {attachment.filename} ({err_type})"
+                                        )
+                                        lesson_report.attachments.append(ItemDownloadResult(
+                                            name=attachment.filename, status="error",
+                                            error_type=err_type, error_message=err_msg,
+                                        ))
 
                             if lesson_details.auxiliary_urls:
-                                aux_path = lesson_path / f"Links Extras.txt"
-                                if self._should_skip_download(lesson_entry, "auxiliary_urls"):
-                                    self.signals.result.emit(
-                                        "      - Links extras já salvos anteriormente. Pulando geração do arquivo."
+                                if getattr(self.settings, "skip_auxiliary_urls_download", False):
+                                    self.signals.result.emit("      - [CONFIG] Pulando links extras (configuração ativa).")
+                                    self._mark_resume_status(
+                                        course_id_str, module_key, lesson_key, "auxiliary_urls", None, True
                                     )
                                 else:
-                                    try:
-                                        with open(aux_path, 'w', encoding='utf-8') as aux_file:
-                                            for aux_index, aux in enumerate(lesson_details.auxiliary_urls, start=1):
-                                                if hasattr(aux, 'url'):
-                                                    text = f"{aux.description or aux.title or 'Link'}: {aux.url}"
-                                                else:
-                                                    text = str(aux)
-                                                aux_file.write(f"{aux_index}. {text}\n")
-                                        self._mark_resume_status(
-                                            course_id_str, module_key, lesson_key, "auxiliary_urls", None, True
+                                    aux_path = lesson_path / f"Links Extras.txt"
+                                    if self._should_skip_download(lesson_entry, "auxiliary_urls"):
+                                        self.signals.result.emit(
+                                            "      - Links extras já salvos anteriormente. Pulando geração do arquivo."
                                         )
-                                    except Exception as exc:
-                                        logging.error("Falha ao salvar links extras: %s", exc, exc_info=True)
-                                        self._mark_resume_status(
-                                            course_id_str, module_key, lesson_key, "auxiliary_urls", None, False
-                                        )
-                                        raise
-                                self.signals.result.emit(f"      - URL auxiliar salva em {aux_path}")
+                                    else:
+                                        try:
+                                            with open(aux_path, 'w', encoding='utf-8') as aux_file:
+                                                for aux_index, aux in enumerate(lesson_details.auxiliary_urls, start=1):
+                                                    if hasattr(aux, 'url'):
+                                                        text = f"{aux.description or aux.title or 'Link'}: {aux.url}"
+                                                    else:
+                                                        text = str(aux)
+                                                    aux_file.write(f"{aux_index}. {text}\n")
+                                            self._mark_resume_status(
+                                                course_id_str, module_key, lesson_key, "auxiliary_urls", None, True
+                                            )
+                                        except Exception as exc:
+                                            logging.error("Falha ao salvar links extras: %s", exc, exc_info=True)
+                                            self._mark_resume_status(
+                                                course_id_str, module_key, lesson_key, "auxiliary_urls", None, False
+                                            )
+                                            raise
+                                    self.signals.result.emit(f"      - URL auxiliar salva em {aux_path}")
                             
                             watch_behavior = getattr(self.settings, "lesson_watch_status_behavior", "none")
                             mark_as_watched_bool = None

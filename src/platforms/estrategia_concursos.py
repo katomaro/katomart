@@ -409,9 +409,11 @@ Marque a opção "Emular Navegador" e faça login manualmente no navegador, apó
                 if not aula.get("is_disponivel", True):
                     continue
 
+                lesson_title = self._build_lesson_title(aula, idx)
+
                 lessons.append({
                     "id": str(aula_id),
-                    "title": aula.get("nome", f"Aula {idx}"),
+                    "title": lesson_title,
                     "order": idx,
                     "locked": not aula.get("is_disponivel", True),
                     "conteudo": aula.get("conteudo", ""),
@@ -445,6 +447,15 @@ Marque a opção "Emular Navegador" e faça login manualmente no navegador, apó
 
         return content
 
+    def _build_lesson_title(self, aula: Dict[str, Any], fallback_order: int) -> str:
+        """Builds a stable lesson title for folder naming."""
+        conteudo = str(aula.get("conteudo") or "").strip()
+
+        if conteudo:
+            return conteudo
+
+        return f"Aula {fallback_order}"
+
     def fetch_lesson_details(
         self, lesson: Dict[str, Any], course_slug: str, course_id: str, module_id: str
     ) -> LessonContent:
@@ -454,7 +465,7 @@ Marque a opção "Emular Navegador" e faça login manualmente no navegador, apó
 
         content = LessonContent()
         lesson_id = lesson.get("id")
-        lesson_title = lesson.get("title", "Aula")
+        lesson_title = str(lesson.get("title") or "").strip()
 
         if not lesson_id:
             logger.warning("Aula sem ID: %s", lesson_title)
@@ -471,6 +482,9 @@ Marque a opção "Emular Navegador" e faça login manualmente no navegador, apó
             return content
 
         lesson_data = data.get("data", {})
+        if not lesson_title:
+            lesson_title = self._build_lesson_title(lesson_data, 0)
+
         videos_data = lesson_data.get("videos", [])
         attachment_order = 10  # Start after PDFs (1, 2, 3)
 

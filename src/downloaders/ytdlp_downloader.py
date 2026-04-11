@@ -1,5 +1,4 @@
 import logging
-import re
 
 from pathlib import Path
 import requests
@@ -32,15 +31,7 @@ class YtdlpDownloader(BaseDownloader):
         Returns:
             bool: True if the download was successful, False otherwise.
         """
-        def _has_extension(path: Path) -> bool:
-            """Return True when the path ends with a likely file extension."""
-
-            suffix = path.suffix
-            return bool(suffix and re.fullmatch(r"\.[A-Za-z0-9]{1,5}", suffix))
-
-        output_template = str(download_path)
-        if not _has_extension(download_path):
-            output_template += ".%(ext)s"
+        output_template = self.build_ytdlp_output_template(download_path, self.settings)
 
         retry_opts = build_ytdlp_retry_config(self.settings)
         

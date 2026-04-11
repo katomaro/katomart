@@ -18,6 +18,7 @@ class AppSettings:
     subtitle_language: str = "en"
     audio_language: str = "pt-BR"
     keep_audio_only: bool = False
+    try_keep_original_video_name: bool = False
     user_agent: str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
     download_retry_attempts: int = 0
     download_retry_delay_seconds: int = 60
@@ -73,6 +74,9 @@ class AppSettings:
     lesson_access_delay: int = 0
     lesson_watch_status_behavior: str = "none"
     skip_video_download: bool = False
+    skip_description_download: bool = False
+    skip_auxiliary_urls_download: bool = False
+    skip_attachment_download: bool = False
     youtube_cookies_path: str = ""
     pause_on_partial_count: int = 0
     pause_on_error_count: int = 0
@@ -136,6 +140,9 @@ class SettingsManager:
             "create_resume_summary": default.create_resume_summary,
             "allowed_attachment_extensions": default.allowed_attachment_extensions,
             "skip_video_download": default.skip_video_download,
+            "skip_description_download": default.skip_description_download,
+            "skip_auxiliary_urls_download": default.skip_auxiliary_urls_download,
+            "skip_attachment_download": default.skip_attachment_download,
         }
         return replace(settings, **paid_only_fields)
 
@@ -188,6 +195,9 @@ class SettingsManager:
                 "create_resume_summary",
                 "allowed_attachment_extensions",
                 "skip_video_download",
+                "skip_description_download",
+                "skip_auxiliary_urls_download",
+                "skip_attachment_download",
             }
 
             cached_premium_values = {

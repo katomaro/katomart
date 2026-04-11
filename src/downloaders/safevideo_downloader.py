@@ -65,7 +65,7 @@ class SafeVideoDownloader(BaseDownloader):
             retry_opts = build_ytdlp_retry_config(settings)
             
             ydl_opts = {
-                'outtmpl': f"{str(download_path)}.%(ext)s",
+                'outtmpl': self.build_ytdlp_output_template(download_path, settings),
                 'http_headers': dl_headers,
                 'quiet': True,
                 'no_warnings': True,

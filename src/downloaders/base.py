@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from pathlib import Path
+import re
 import requests
 from src.config.settings_manager import SettingsManager
 
@@ -49,6 +50,32 @@ class BaseDownloader(ABC):
                 opts['format'] = 'bestvideo+bestaudio/best'
 
         return opts
+
+    @staticmethod
+    def _has_likely_extension(path: Path) -> bool:
+        suffix = path.suffix
+        return bool(suffix and re.fullmatch(r"\.[A-Za-z0-9]{1,5}", suffix))
+
+    def build_ytdlp_output_template(self, download_path: Path, settings) -> str:
+        """Build yt-dlp outtmpl while preserving numbered prefixes when requested."""
+
+        prefer_original_name = bool(getattr(settings, "try_keep_original_video_name", False))
+
+        if prefer_original_name:
+            stem = download_path.stem
+            match = re.match(r"^(\d+\.\s*)", stem)
+            if match:
+                output_stem = f"{match.group(1)}%(title).200B"
+            else:
+                output_stem = "%(title).200B"
+            output_template = str(download_path.with_name(output_stem))
+        else:
+            output_template = str(download_path)
+
+        if not self._has_likely_extension(download_path):
+            output_template += ".%(ext)s"
+
+        return output_template
 
     @abstractmethod
     def download_video(self, url: str, session: requests.Session, download_path: Path, extra_props: dict = None) -> bool:

@@ -250,7 +250,7 @@ Para usuários gratuitos: Como obter o token da Hotmart?:
                 )
             )
 
-        for reading_index, reading in enumerate(data.get("complementaryReadings", []), start=1):
+        for reading_index, reading in enumerate(attachment_json.get("complementaryReadings", []), start=1):
             url_id = reading.get("id", reading.get("articleUrl", ""))
             url = reading.get("articleUrl", "")
             order = reading.get("order", reading_index)
