@@ -31,13 +31,20 @@ class UdemyDownloader(BaseDownloader):
 
     def _extract_pssh(self, mpd_content: str) -> Optional[str]:
         try:
-            pssh_match = re.search(
+            widevine_sys_id = bytes.fromhex("edef8ba979d64acea3c827dcd51d21ed")
+            pssh_matches = re.findall(
                 r'<(?:[a-zA-Z0-9]+:)?pssh[^>]*>(.*?)</(?:[a-zA-Z0-9]+:)?pssh>',
                 mpd_content,
                 re.DOTALL | re.IGNORECASE
             )
-            if pssh_match:
-                return pssh_match.group(1).strip()
+            for raw in pssh_matches:
+                candidate = raw.strip()
+                try:
+                    decoded = b64decode(candidate)
+                except Exception:
+                    continue
+                if len(decoded) >= 28 and decoded[4:8] == b'pssh' and decoded[12:28] == widevine_sys_id:
+                    return candidate
             return None
         except Exception as e:
             logging.error(f"Error extracting PSSH: {e}")
@@ -341,8 +348,7 @@ class UdemyDownloader(BaseDownloader):
 
                 logging.info(f"Descriptografando {os.path.basename(enc_file)}...")
                 try:
-                    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-                                   **({"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}))
+                    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
                     decrypted_files.append(dec_file)
                 except subprocess.CalledProcessError as e:
                     logging.error(f"Erro na descriptografia: {e.stderr.decode(errors='replace')}")
@@ -362,8 +368,7 @@ class UdemyDownloader(BaseDownloader):
 
             logging.info("Unindo arquivos...")
             try:
-                subprocess.run(cmd_merge, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-                               **({"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}))
+                subprocess.run(cmd_merge, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
             except subprocess.CalledProcessError as e:
                 logging.error(f"Erro ao unir arquivos: {e.stderr.decode(errors='replace')}")
                 return False
@@ -388,7 +393,7 @@ class UdemyDownloader(BaseDownloader):
             http_headers[header_key] = value
 
         ydl_opts = {
-            'outtmpl': self.build_ytdlp_output_template(download_path, self.settings),
+            'outtmpl': str(download_path) + ".%(ext)s",
             'noplaylist': True,
             'http_headers': http_headers,
             'quiet': True,
