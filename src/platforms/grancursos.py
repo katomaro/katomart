@@ -58,6 +58,7 @@ class GranCursosPlatform(BasePlatform):
     @classmethod
     def auth_instructions(cls) -> str:
         return """
+CUIDADO: CURSOS NOVOS POSSUEM MATERIAL GERADO POR IA, QUE EH SUCESTIVEL A ERROS.
 Assinantes (R$ 9.90) ativos podem informar usuário/senha. O sistema irá fazer login automaticamente.
 
 Para usuários Gratuitos: Como obter o cookie de sessão:
