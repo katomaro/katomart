@@ -4,7 +4,7 @@ import logging
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -26,6 +26,9 @@ LIST_LESSONS_URL = f"{BASE_URL}/aluno/curso/listar-conteudo-aula/codigo/{{course
 VIDEO_INFO_URL = f"{BASE_URL}/aluno/sala-de-aula/video/co/{{course_id}}/a/{{video_id}}/c/{{contract_id}}"
 MATERIALS_URL = f"{BASE_URL}/aluno/sala-de-aula/get-materiais/co/{{course_id}}/a/{{video_id}}/t/video"
 AUDIO_URL = f"{BASE_URL}/aluno/espaco/download-audio/codigo/{{course_id}}/c/{{video_id}}"
+SLIDE_URL = f"{BASE_URL}/aluno/espaco/download-apostila/codigo/{{course_id}}/c/{{apostila_id}}"
+DEGRAVACAO_URL = f"{BASE_URL}/aluno/espaco/download-resumo/codigo/{{course_id}}/c/{{material_resumo_id}}"
+ARTEFATOS_URL = f"{BASE_URL}/aluno/sala-de-aula/artefatos"
 
 # CDN base URLs for materials
 ASSETS_CDN_URL = "https://assets.infra.grancursosonline.com.br"
@@ -65,7 +68,8 @@ Para usuários Gratuitos: Como obter o cookie de sessão:
 5) Cole o valor do cookie no campo acima.
 
 Observação: O login com usuário/senha pode não funcionar se houver Cloudflare challenge.
-Nesse caso, use o método do cookie.
+Nesse caso, use o método do cookie. Eh interessante usar configuracoes de delay na aba de configuracoes para que o programa funcione melhor.
+Caso ele indique erros, perceba que o conteudo existe na pagina, eh apenas uma peculiaridade da plataforma atual.
 """.strip()
 
     def authenticate(self, credentials: Dict[str, Any]) -> None:
@@ -393,6 +397,62 @@ Nesse caso, use o método do cookie.
             logger.debug("Falha ao construir URL assinada: %s", exc)
             return None
 
+    def _is_pdf_url(self, url: str) -> bool:
+        """Returns True when URL points to a PDF resource."""
+        if not url:
+            return False
+
+        parsed = urlparse(url)
+        if parsed.path.lower().endswith(".pdf"):
+            return True
+
+        return "response-content-type=application/pdf" in parsed.query.lower()
+
+    def _fetch_artefatos(
+        self,
+        video_id: str,
+        course_id: str,
+        module_id: str,
+        aula_nome: str,
+        disciplina_nome: str,
+        legenda_url: Optional[str],
+    ) -> Dict[str, Any]:
+        """POSTs to /artefatos to retrieve AI-generated materials (summary/transcript/review/quiz)."""
+        if not self._session:
+            return {}
+
+        clean_aula_nome = re.sub(r"^\d+\s*[-.]\s*", "", (aula_nome or "").strip())
+        discipline_id = module_id.split("_", 1)[0] if "_" in (module_id or "") else (module_id or "")
+
+        payload: Dict[str, Any] = {
+            "type": "VIDEO",
+            "disciplinaNome": disciplina_nome or "",
+            "aulaNome": clean_aula_nome,
+            "cursoId": course_id,
+            "aulaId": video_id,
+            "disciplinaId": discipline_id,
+            "arquivos": {"legenda": legenda_url} if legenda_url else {},
+            "artifactTypes": ["summary", "transcript", "review", "quiz"],
+        }
+
+        try:
+            response = self._session.post(
+                ARTEFATOS_URL,
+                json=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Origin": BASE_URL,
+                    "Referer": f"{BASE_URL}/",
+                    "X-Requested-With": "XMLHttpRequest",
+                },
+            )
+            response.raise_for_status()
+            data = response.json()
+            return data.get("artefatos", {}) or {}
+        except Exception as exc:
+            logger.debug("Falha ao obter artefatos AI para aula %s: %s", video_id, exc)
+            return {}
+
     def fetch_lesson_details(self, lesson: Dict[str, Any], course_slug: str, course_id: str, module_id: str) -> LessonContent:
         if not self._session:
             raise ConnectionError("A sessão não está autenticada.")
@@ -471,14 +531,18 @@ Nesse caso, use o método do cookie.
 
         attachment_order = 0
 
-        # Slide PDF - relative path, use main site URL with session cookies
-        slide_path = arquivos.get("slide")
-        if slide_path:
+        # Slide PDF - downloaded via /aluno/espaco/download-apostila using fk_apostila
+        fk_apostila = lesson.get("fk_apostila")
+        if fk_apostila:
+            slide_url = SLIDE_URL.format(
+                course_id=course_id_encoded,
+                apostila_id=quote(str(fk_apostila), safe=""),
+            )
             attachment_order += 1
             content.attachments.append(
                 Attachment(
                     attachment_id=f"slide_{video_id}",
-                    url=f"{BASE_URL}/{slide_path}",
+                    url=slide_url,
                     filename=f"Slide - {lesson_title}.pdf",
                     order=attachment_order,
                     extension="pdf",
@@ -486,14 +550,18 @@ Nesse caso, use o método do cookie.
                 )
             )
 
-        # Degravação (Transcription) PDF - relative path, use main site URL with session cookies
-        degravacao_path = arquivos.get("degravacao")
-        if degravacao_path:
+        # Degravação (ou "Material pdf" para não-premium) - via /aluno/espaco/download-resumo
+        fk_material_resumo = lesson.get("fk_material_resumo")
+        if fk_material_resumo:
+            degravacao_url = DEGRAVACAO_URL.format(
+                course_id=course_id_encoded,
+                material_resumo_id=quote(str(fk_material_resumo), safe=""),
+            )
             attachment_order += 1
             content.attachments.append(
                 Attachment(
                     attachment_id=f"degravacao_{video_id}",
-                    url=f"{BASE_URL}/{degravacao_path}",
+                    url=degravacao_url,
                     filename=f"Degravação - {lesson_title}.pdf",
                     order=attachment_order,
                     extension="pdf",
@@ -501,22 +569,33 @@ Nesse caso, use o método do cookie.
                 )
             )
 
-        # Legenda (Subtitle) SRT - CDN path, needs signed URL from video
-        legenda_path = arquivos.get("legenda")
-        if legenda_path and stream_url:
-            legenda_full_url = self._build_signed_url(stream_url, legenda_path)
-            if legenda_full_url:
-                attachment_order += 1
-                content.attachments.append(
-                    Attachment(
-                        attachment_id=f"legenda_{video_id}",
-                        url=legenda_full_url,
-                        filename=f"Legenda - {lesson_title}.srt",
-                        order=attachment_order,
-                        extension="srt",
-                        size=0
-                    )
+        # Legenda (Subtitle) SRT — CloudFront canned-policy signatures are URL-specific,
+        # so we cannot reuse the video's signature on the .srt path. The pre-signed SRT
+        # URL is exposed by the video info endpoint under player.caption.src.
+        legenda_full_url: Optional[str] = None
+        caption = player.get("caption") if isinstance(player, dict) else None
+        if isinstance(caption, dict):
+            caption_src = caption.get("src")
+            if isinstance(caption_src, str) and caption_src.startswith(("http://", "https://")):
+                legenda_full_url = caption_src
+
+        if not legenda_full_url:
+            legenda_path = arquivos.get("legenda")
+            if isinstance(legenda_path, str) and legenda_path.startswith(("http://", "https://")):
+                legenda_full_url = legenda_path
+
+        if legenda_full_url:
+            attachment_order += 1
+            content.attachments.append(
+                Attachment(
+                    attachment_id=f"legenda_{video_id}",
+                    url=legenda_full_url,
+                    filename=f"Legenda - {lesson_title}.srt",
+                    order=attachment_order,
+                    extension="srt",
+                    size=0
                 )
+            )
 
         # Audio (MP3) - uses special download endpoint
         attachment_order += 1
@@ -535,7 +614,56 @@ Nesse caso, use o método do cookie.
             )
         )
 
-        # Additional materials with full URLs (resumo, flashcards, mindmap, etc.)
+        # AI-generated artifacts via POST /artefatos (primary source — returns URLs on ltp.infra CDN).
+        # The legacy arquivos.* URLs on videoaulas-stg.infra are kept as fallback for types
+        # not returned by /artefatos or when the POST fails.
+        artefatos = self._fetch_artefatos(
+            video_id=str(video_id),
+            course_id=course_id,
+            module_id=module_id,
+            aula_nome=lesson_title,
+            disciplina_nome=str(lesson.get("materia") or ""),
+            legenda_url=legenda_full_url,
+        )
+
+        artefato_labels = {
+            "summary": ("Resumo", "md"),
+            "transcript": ("Transcrição", "json"),
+            "review": ("Revisão", "md"),
+            "quiz": ("Questões", "json"),
+        }
+        artefato_to_legacy = {
+            "summary": "resumo",
+            "transcript": "transcricao",
+            "review": "mindmap",
+            "quiz": "questions",
+        }
+        handled_legacy_keys: set = set()
+
+        for artefato_type, (name, ext) in artefato_labels.items():
+            artefato = artefatos.get(artefato_type) if isinstance(artefatos, dict) else None
+            if not isinstance(artefato, dict) or artefato.get("status") != "completed":
+                continue
+
+            artefato_url = artefato.get("url")
+            if not isinstance(artefato_url, str) or not artefato_url.startswith("http"):
+                continue
+
+            attachment_order += 1
+            content.attachments.append(
+                Attachment(
+                    attachment_id=f"{artefato_type}_{video_id}",
+                    url=artefato_url,
+                    filename=f"{name} - {lesson_title}.{ext}",
+                    order=attachment_order,
+                    extension=ext,
+                    size=0
+                )
+            )
+            handled_legacy_keys.add(artefato_to_legacy[artefato_type])
+
+        # Legacy url_materials fallback — covers types not returned by /artefatos (e.g. flashcards)
+        # and any artifact missing from the POST response.
         url_materials = [
             ("resumo", "Resumo", "md"),
             ("transcricao", "Transcrição", "json"),
@@ -545,8 +673,14 @@ Nesse caso, use o método do cookie.
         ]
 
         for key, name, ext in url_materials:
+            if key in handled_legacy_keys:
+                continue
+
             material_url = arquivos.get(key)
-            if material_url and material_url.startswith("http"):
+            if isinstance(material_url, str) and material_url.startswith("http"):
+                if key == "resumo" and self._is_pdf_url(material_url):
+                    continue
+
                 attachment_order += 1
                 content.attachments.append(
                     Attachment(
@@ -571,8 +705,16 @@ Nesse caso, use o método do cookie.
             logger.error("Anexo sem URL disponível: %s", attachment.filename)
             return False
 
+        # The CloudFront CDN behind *.infra.grancursosonline.com.br validates
+        # Origin/Referer — without these, signed URLs come back 403 even with a
+        # valid Expires+Signature. The browser always sends them via CORS.
+        headers = {
+            "Origin": BASE_URL,
+            "Referer": f"{BASE_URL}/",
+        }
+
         try:
-            response = self._session.get(attachment.url, stream=True)
+            response = self._session.get(attachment.url, stream=True, headers=headers)
             response.raise_for_status()
             with open(download_path, "wb") as file_handle:
                 for chunk in response.iter_content(chunk_size=8192):
