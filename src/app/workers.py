@@ -26,6 +26,7 @@ from src.app.models import ItemDownloadResult, LessonDownloadReport
 
 from src.utils.filesystem import sanitize_path_component
 from src.utils.filesystem import truncate_component, truncate_filename_preserve_ext, get_executable_path
+from src.utils.ffmpeg_postprocess import run_ffmpeg_post_process
 
 
 class WorkerSignals(QObject):
@@ -730,6 +731,54 @@ class DownloadWorker(QRunnable):
         self.signals.result.emit("\n".join(lines))
         self.signals.download_report.emit(report)
 
+    def _maybe_run_ffmpeg_post_process(self, expected_media_path: Path) -> None:
+        """Run user-configured ffmpeg pass on the downloaded media if enabled."""
+
+        if not getattr(self.settings, "run_ffmpeg", False):
+            return
+
+        args_str = (getattr(self.settings, "ffmpeg_args", "") or "").strip()
+        if not args_str:
+            return
+
+        media_path = self._find_downloaded_media(expected_media_path)
+        if not media_path:
+            logging.warning(
+                f"Pós-processamento ffmpeg ignorado, arquivo não localizado: {expected_media_path}"
+            )
+            return
+
+        try:
+            run_ffmpeg_post_process(
+                media_path,
+                getattr(self.settings, "ffmpeg_path", None),
+                args_str,
+            )
+            self.signals.result.emit(
+                f"      - Pós-processamento ffmpeg aplicado: {media_path.name}"
+            )
+        except FileNotFoundError:
+            logging.error("ffmpeg não encontrado para o pós-processamento.")
+            self.signals.result.emit(
+                "      - [ERROR] ffmpeg não encontrado para o pós-processamento."
+            )
+        except ValueError as exc:
+            logging.error(f"Argumentos ffmpeg inválidos: {exc}")
+            self.signals.result.emit(
+                f"      - [ERROR] Argumentos ffmpeg inválidos: {exc}"
+            )
+        except subprocess.CalledProcessError:
+            self.signals.result.emit(
+                "      - [ERROR] ffmpeg falhou no pós-processamento (ver log)."
+            )
+        except Exception as exc:
+            logging.error(
+                f"Erro inesperado no pós-processamento ffmpeg: {exc}", exc_info=True
+            )
+            self.signals.result.emit(
+                "      - [ERROR] Falha inesperada no pós-processamento ffmpeg."
+            )
+
     def _maybe_transcribe_video(self, expected_media_path: Path) -> None:
         """Extract audio and transcribe a video when Whisper is enabled."""
 
@@ -1064,6 +1113,7 @@ class DownloadWorker(QRunnable):
                                                             description=f"Download do Conteudo linkado '{emb_name}'",
                                                         )
                                                         self.signals.result.emit(f"    - Conteudo linkado baixado: {emb_path.resolve()}")
+                                                        self._maybe_run_ffmpeg_post_process(emb_path)
                                                         self._maybe_transcribe_video(emb_path)
                                                     except Exception as e:
                                                         logging.error(
@@ -1124,6 +1174,7 @@ class DownloadWorker(QRunnable):
                                         lesson_report.videos.append(ItemDownloadResult(
                                             name=video_name, status="success",
                                         ))
+                                        self._maybe_run_ffmpeg_post_process(video_path)
                                         self._maybe_transcribe_video(video_path)
                                     except Exception as e:
                                         err_type, err_msg = self._classify_error(e)

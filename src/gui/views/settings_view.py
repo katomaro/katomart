@@ -434,6 +434,25 @@ class SettingsView(QWidget):
             "0 = desativado."
         )
 
+        self.run_ffmpeg_check = QCheckBox(
+            "Rodar ffmpeg como pós-processamento nos vídeos baixados"
+        )
+        self.run_ffmpeg_check.setToolTip(
+            "Ao concluir cada download de vídeo, executa ffmpeg com os argumentos abaixo "
+            "e substitui o arquivo original pelo resultado."
+        )
+
+        self.ffmpeg_args_edit = QLineEdit()
+        self.ffmpeg_args_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.ffmpeg_args_edit.setMaximumWidth(600)
+        self.ffmpeg_args_edit.setPlaceholderText("Ex: -c copy")
+        self.ffmpeg_args_edit.setToolTip(
+            "Argumentos aplicados entre -i <entrada> e <saída>. "
+            "Não informe -i, -y ou caminho de saída; são gerenciados automaticamente."
+        )
+        self.run_ffmpeg_check.toggled.connect(self.ffmpeg_args_edit.setEnabled)
+        self.ffmpeg_args_edit.setEnabled(False)
+
         self.use_http_proxy_check.toggled.connect(self._update_proxy_fields_state)
         self._update_proxy_fields_state(False)
         self.use_whisper_transcription_check.toggled.connect(
@@ -483,6 +502,9 @@ class SettingsView(QWidget):
             "Formato da Transcrição:", self.whisper_output_format_combo
         )
         self._paid_form_layout.addRow(self.whisper_parallel_transcription_check)
+
+        self._paid_form_layout.addRow(self.run_ffmpeg_check)
+        self._paid_form_layout.addRow("Argumentos do ffmpeg:", self.ffmpeg_args_edit)
 
         self.embed_blacklist_edit = QTextEdit()
         self.embed_blacklist_edit.setPlaceholderText("example.com\ndocs.example.com\n...")
@@ -580,6 +602,9 @@ class SettingsView(QWidget):
         self.proxy_port_spin.setValue(settings.proxy_port)
         self._update_proxy_fields_state(settings.use_http_proxy)
         self.use_whisper_transcription_check.setChecked(settings.use_whisper_transcription)
+        self.run_ffmpeg_check.setChecked(getattr(settings, "run_ffmpeg", False))
+        self.ffmpeg_args_edit.setText(getattr(settings, "ffmpeg_args", "-c copy"))
+        self.ffmpeg_args_edit.setEnabled(self.run_ffmpeg_check.isChecked())
 
         model_index = self.whisper_model_combo.findText(settings.whisper_model)
         if model_index != -1:
@@ -663,8 +688,8 @@ class SettingsView(QWidget):
             whisper_language=self.whisper_language_combo.currentData(),
             whisper_output_format=self.whisper_output_format_combo.currentData(),
             whisper_parallel_transcription=self.whisper_parallel_transcription_check.isChecked(),
-            run_ffmpeg=current_settings.run_ffmpeg,
-            ffmpeg_args=current_settings.ffmpeg_args,
+            run_ffmpeg=self.run_ffmpeg_check.isChecked(),
+            ffmpeg_args=self.ffmpeg_args_edit.text().strip(),
             max_course_name_length=self.course_name_max_spin.value(),
             max_module_name_length=self.module_name_max_spin.value(),
             max_lesson_name_length=self.lesson_name_max_spin.value(),
