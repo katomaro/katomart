@@ -1,2 +1,2 @@
-BUILD_NUMBER = 58
+BUILD_NUMBER = 59
 VERSION_FILE_URL = "https://raw.githubusercontent.com/katomaro/katomart/refs/heads/master/VERSION.json"

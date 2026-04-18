@@ -29,6 +29,7 @@ class CademiPlatform(BasePlatform):
     def __init__(self, api_service: ApiService, settings_manager: SettingsManager):
         super().__init__(api_service, settings_manager)
         self._site_url: str = ""
+        self._version: int = 4
 
     _SESSION_COOKIE_PATTERN = re.compile(r"^app_v([1-6])_session$")
 
@@ -50,8 +51,10 @@ class CademiPlatform(BasePlatform):
 1) Acesse sua area de membros (ex: https://seusite.cademi.com.br) e faca login.
 2) Abra o DevTools (F12) > aba Application > Cookies.
 3) Identifique o cookie de sessao (ex: app_v1_session ate app_v6_session).
+   A versao da Cademi e inferida pelo numero no nome do cookie (v4, v6, etc.).
 4) Cole no campo de token no formato: cookie_name:value
-   Exemplo: app_v4_session:SEU_VALOR_AQUI
+   Exemplo v4: app_v4_session:SEU_VALOR_AQUI
+   Exemplo v6: app_v6_session:SEU_VALOR_AQUI
 
 Assinantes ativos podem informar usuario/senha para login automatico.
 """.strip()
@@ -150,9 +153,17 @@ Assinantes ativos podem informar usuario/senha para login automatico.
     def _configure_session(self, token: str) -> None:
         cookie_name, cookie_value = self._parse_session_token(token)
 
+        version_match = self._SESSION_COOKIE_PATTERN.match(cookie_name)
+        self._version = int(version_match.group(1)) if version_match else 4
+
         if hasattr(self, "_login_session") and self._login_session:
             self._session = self._login_session
             self._login_session = None
+            live_cookie = self._extract_cademi_session_cookie(self._session)
+            if live_cookie:
+                live_match = self._SESSION_COOKIE_PATTERN.match(live_cookie[0])
+                if live_match:
+                    self._version = int(live_match.group(1))
         else:
             self._session = requests.Session()
             self._session.cookies.set(cookie_name, cookie_value)
@@ -163,13 +174,14 @@ Assinantes ativos podem informar usuario/senha para login automatico.
             "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
         })
 
-        resp = self._session.get(f"{self._site_url}/area/vitrine", timeout=30, allow_redirects=True)
+        probe_path = "/area/vitrine/home" if self._version >= 6 else "/area/vitrine"
+        resp = self._session.get(f"{self._site_url}{probe_path}", timeout=30, allow_redirects=True)
         if "/auth/login" in resp.url:
             raise ConnectionError(
                 "Falha ao autenticar na Cademi. Verifique o token no formato cookie_name:value "
-                "(ex: app_v4_session:SEU_VALOR)."
+                "(ex: app_v4_session:SEU_VALOR ou app_v6_session:SEU_VALOR)."
             )
-        logger.info("Cademi: authenticated successfully")
+        logger.info("Cademi v%d: authenticated successfully", self._version)
 
     def get_session(self) -> Optional[requests.Session]:
         return self._session
@@ -177,7 +189,11 @@ Assinantes ativos podem informar usuario/senha para login automatico.
     def fetch_courses(self) -> List[Dict[str, Any]]:
         if not self._session:
             raise ConnectionError("Sessao nao autenticada.")
+        if self._version >= 6:
+            return self._fetch_courses_v6()
+        return self._fetch_courses_v4()
 
+    def _fetch_courses_v4(self) -> List[Dict[str, Any]]:
         resp = self._session.get(f"{self._site_url}/area/vitrine", timeout=30)
         resp.raise_for_status()
 
@@ -208,8 +224,91 @@ Assinantes ativos podem informar usuario/senha para login automatico.
         if not courses:
             courses = self._extract_courses_from_classes(soup)
 
-        logger.debug("Cademi: found %d courses", len(courses))
+        logger.debug("Cademi v4: found %d courses", len(courses))
         return sorted(courses.values(), key=lambda c: c.get("name", ""))
+
+    def _fetch_courses_v6(self) -> List[Dict[str, Any]]:
+        max_vitrines = 50
+        to_visit: List[str] = ["/area/vitrine/home"]
+        visited_vitrines: set = set()
+        discovered: Dict[str, str] = {}
+
+        while to_visit and len(visited_vitrines) < max_vitrines:
+            path = to_visit.pop(0)
+            if path in visited_vitrines:
+                continue
+            visited_vitrines.add(path)
+
+            try:
+                resp = self._session.get(f"{self._site_url}{path}", timeout=30, allow_redirects=True)
+                if not resp.ok:
+                    logger.warning("Cademi v6: vitrine %s returned %s", path, resp.status_code)
+                    continue
+                soup = BeautifulSoup(resp.text, "html.parser")
+            except Exception as exc:
+                logger.warning("Cademi v6: failed to traverse %s: %s", path, exc)
+                continue
+
+            for link in soup.find_all("a", href=re.compile(r"/area/conteudo/produto/\d+")):
+                match = re.search(r"/area/conteudo/produto/(\d+)", link.get("href", ""))
+                if not match:
+                    continue
+                pid = match.group(1)
+                if pid in discovered:
+                    continue
+                img = link.find("img")
+                name = (img.get("alt", "").strip() if img else "") or ""
+                discovered[pid] = name
+
+            for link in soup.find_all("a", href=re.compile(r"/area/vitrine/\d+")):
+                href = link.get("href", "")
+                normalized = href.split("?", 1)[0].split("#", 1)[0]
+                if not re.match(r"^/area/vitrine/\d+$", normalized):
+                    continue
+                if normalized in visited_vitrines or normalized in to_visit:
+                    continue
+                to_visit.append(normalized)
+
+            time.sleep(0.2)
+
+        courses: List[Dict[str, Any]] = []
+        for pid, name in discovered.items():
+            if not name:
+                name = self._resolve_course_name_v6(pid) or f"Curso {pid}"
+                time.sleep(0.3)
+            courses.append({
+                "id": pid,
+                "name": name,
+                "slug": pid,
+                "seller_name": "",
+            })
+
+        logger.debug(
+            "Cademi v6: found %d courses across %d vitrines", len(courses), len(visited_vitrines)
+        )
+        return sorted(courses, key=lambda c: c.get("name", ""))
+
+    def _resolve_course_name_v6(self, product_id: str) -> str:
+        try:
+            resp = self._session.get(
+                f"{self._site_url}/area/conteudo/produto/{product_id}",
+                timeout=30,
+                allow_redirects=True,
+            )
+            if not resp.ok:
+                return ""
+            name = self._extract_course_title_v6(resp.text, product_id)
+            if name:
+                return name
+            soup = BeautifulSoup(resp.text, "html.parser")
+            title_el = soup.find("title")
+            if title_el:
+                text = title_el.get_text(strip=True)
+                if text:
+                    return text
+        except Exception as exc:
+            logger.warning("Cademi v6: could not resolve name for course %s: %s", product_id, exc)
+        return ""
 
     def _extract_title_near(self, element: Any) -> str:
         img = element.find("img")
@@ -254,7 +353,11 @@ Assinantes ativos podem informar usuario/senha para login automatico.
     def fetch_course_content(self, courses: List[Dict[str, Any]]) -> Dict[str, Any]:
         if not self._session:
             raise ConnectionError("Sessao nao autenticada.")
+        if self._version >= 6:
+            return self._fetch_course_content_v6(courses)
+        return self._fetch_course_content_v4(courses)
 
+    def _fetch_course_content_v4(self, courses: List[Dict[str, Any]]) -> Dict[str, Any]:
         all_content: Dict[str, Any] = {}
 
         for course in courses:
@@ -262,7 +365,7 @@ Assinantes ativos podem informar usuario/senha para login automatico.
             if not course_id:
                 continue
 
-            logger.debug("Cademi: fetching content for course %s", course_id)
+            logger.debug("Cademi v4: fetching content for course %s", course_id)
 
             try:
                 resp = self._session.get(
@@ -291,7 +394,7 @@ Assinantes ativos podem informar usuario/senha para login automatico.
                     modules = self._parse_product_page(html)
 
             except Exception as exc:
-                logger.error("Cademi: failed to fetch course %s: %s", course_id, exc)
+                logger.error("Cademi v4: failed to fetch course %s: %s", course_id, exc)
                 continue
 
             course_entry = course.copy()
@@ -302,6 +405,87 @@ Assinantes ativos podem informar usuario/senha para login automatico.
             time.sleep(0.3)
 
         return all_content
+
+    def _fetch_course_content_v6(self, courses: List[Dict[str, Any]]) -> Dict[str, Any]:
+        all_content: Dict[str, Any] = {}
+
+        for course in courses:
+            course_id = course.get("id")
+            if not course_id:
+                continue
+
+            logger.debug("Cademi v6: fetching content for course %s", course_id)
+
+            modules: List[Dict[str, Any]] = []
+            lesson_html = ""
+
+            try:
+                entry_resp = self._session.get(
+                    f"{self._site_url}/area/conteudo/produto/{course_id}",
+                    timeout=30,
+                    allow_redirects=True,
+                )
+                entry_resp.raise_for_status()
+                final_url = entry_resp.url
+                entry_html = entry_resp.text
+
+                if "/area/conteudo/aula/" in final_url:
+                    modules = self._parse_sidebar_v6(entry_html)
+                    lesson_html = entry_html
+                else:
+                    entry_soup = BeautifulSoup(entry_html, "html.parser")
+                    hop = (
+                        entry_soup.find("a", href=re.compile(r"/area/conteudo/modulo/\d+"))
+                        or entry_soup.find("a", href=re.compile(r"/area/conteudo/aula/\d+"))
+                    )
+                    if hop:
+                        hop_href = hop.get("href", "")
+                        if not hop_href.startswith("http"):
+                            hop_href = f"{self._site_url}{hop_href}"
+                        lesson_resp = self._session.get(hop_href, timeout=30, allow_redirects=True)
+                        lesson_resp.raise_for_status()
+                        lesson_html = lesson_resp.text
+                        modules = self._parse_sidebar_v6(lesson_html)
+                    else:
+                        lesson_html = entry_html
+
+            except Exception as exc:
+                logger.error("Cademi v6: failed to fetch course %s: %s", course_id, exc)
+                continue
+
+            course_entry = course.copy()
+            course_entry["title"] = (
+                self._extract_course_title_v6(lesson_html, course_id)
+                or self._extract_page_title(lesson_html)
+                or course.get("name", "Curso")
+            )
+            course_entry["modules"] = modules
+            all_content[str(course_id)] = course_entry
+
+            time.sleep(0.3)
+
+        return all_content
+
+    def _extract_course_title_v6(self, html: str, course_id: Any) -> str:
+        if not html:
+            return ""
+        soup = BeautifulSoup(html, "html.parser")
+        breadcrumb = soup.find(class_="breadcrumb")
+        if breadcrumb:
+            target = breadcrumb.find(
+                "a",
+                href=re.compile(rf"/area/conteudo/produto/{re.escape(str(course_id))}$"),
+            )
+            if target:
+                text = target.get_text(strip=True)
+                if text:
+                    return text
+            links = breadcrumb.find_all("a")
+            if links:
+                last = links[-1].get_text(strip=True)
+                if last and last.lower() != "inicio":
+                    return last
+        return ""
 
     def _parse_sidebar(self, html: str) -> List[Dict[str, Any]]:
         soup = BeautifulSoup(html, "html.parser")
@@ -336,6 +520,71 @@ Assinantes ativos podem informar usuario/senha para login automatico.
                 ):
                     href = link.get("href", "")
                     item_match = re.search(r"/area/produto/item/(\d+)", href)
+                    if not item_match:
+                        continue
+
+                    item_id = item_match.group(1)
+                    titulo_el = link.find("div", class_="item-titulo")
+                    lesson_title = titulo_el.get_text(strip=True) if titulo_el else f"Aula {les_idx}"
+
+                    lessons.append({
+                        "id": item_id,
+                        "title": lesson_title,
+                        "order": les_idx,
+                        "locked": False,
+                    })
+
+            modules.append({
+                "id": section_id,
+                "title": module_title,
+                "order": mod_order,
+                "lessons": lessons,
+                "locked": False,
+            })
+
+        return modules
+
+    def _parse_sidebar_v6(self, html: str) -> List[Dict[str, Any]]:
+        soup = BeautifulSoup(html, "html.parser")
+        sections_container = soup.find("div", id="sections") or soup.find("div", class_="sections")
+        if not sections_container:
+            return []
+
+        modules: List[Dict[str, Any]] = []
+
+        for group in sections_container.find_all("div", class_="section-group"):
+            if "progresso-total" in (group.get("class") or []):
+                continue
+
+            mod_order = len(modules) + 1
+            title_div = group.find("div", class_=re.compile("section-group-titulo"))
+            section_id = group.get("data-acesso-secao-id") or str(mod_order)
+            module_title = ""
+
+            if title_div:
+                data_target = title_div.get("data-target", "") or ""
+                id_match = re.match(r"^#s(\d+)$", data_target)
+                if id_match:
+                    section_id = id_match.group(1)
+                else:
+                    section_id = title_div.get("data-secao-id", section_id)
+                titulo_el = title_div.find("div", class_="item-titulo")
+                if titulo_el:
+                    raw_text = " ".join(titulo_el.get_text(separator=" ", strip=True).split())
+                    module_title = re.sub(r"\s*\d+\s*aulas?\s*$", "", raw_text).strip() or raw_text
+
+            items_container = group.find("div", class_="section-items")
+            if not module_title:
+                is_single = bool(items_container) and "single" in (items_container.get("class") or [])
+                module_title = "Conteudo" if is_single else f"Modulo {mod_order}"
+            lessons: List[Dict[str, Any]] = []
+
+            if items_container:
+                for les_idx, link in enumerate(
+                    items_container.find_all("a", href=re.compile(r"/area/conteudo/aula/\d+")), start=1
+                ):
+                    href = link.get("href", "")
+                    item_match = re.search(r"/area/conteudo/aula/(\d+)", href)
                     if not item_match:
                         continue
 
@@ -413,10 +662,12 @@ Assinantes ativos podem informar usuario/senha para login automatico.
             raise ConnectionError("Sessao nao autenticada.")
 
         item_id = lesson.get("id")
-        resp = self._session.get(
-            f"{self._site_url}/area/produto/item/{item_id}",
-            timeout=30,
-        )
+        if self._version >= 6:
+            lesson_url = f"{self._site_url}/area/conteudo/aula/{item_id}"
+        else:
+            lesson_url = f"{self._site_url}/area/produto/item/{item_id}"
+
+        resp = self._session.get(lesson_url, timeout=30)
         resp.raise_for_status()
         html = resp.text
 
