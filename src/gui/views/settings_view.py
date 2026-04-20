@@ -131,23 +131,23 @@ class SettingsView(QWidget):
         self.video_quality_combo.setMaximumWidth(600)
 
         self.course_name_max_spin = QSpinBox()
-        self.course_name_max_spin.setRange(10, 200)
+        self.course_name_max_spin.setMaximum(2147483647)
         self.course_name_max_spin.setMinimumWidth(64)
 
         self.module_name_max_spin = QSpinBox()
-        self.module_name_max_spin.setRange(10, 300)
+        self.module_name_max_spin.setMaximum(2147483647)
         self.module_name_max_spin.setMinimumWidth(64)
 
         self.lesson_name_max_spin = QSpinBox()
-        self.lesson_name_max_spin.setRange(10, 300)
+        self.lesson_name_max_spin.setMaximum(2147483647)
         self.lesson_name_max_spin.setMinimumWidth(64)
 
         self.file_name_max_spin = QSpinBox()
-        self.file_name_max_spin.setRange(5, 200)
+        self.file_name_max_spin.setMaximum(2147483647)
         self.file_name_max_spin.setMinimumWidth(64)
 
         self.timeout_spin = QSpinBox()
-        self.timeout_spin.setRange(10, 300)
+        self.timeout_spin.setMaximum(2147483647)
         self.timeout_spin.setMinimumWidth(64)
         self.download_subtitles_check = QCheckBox("Baixar Legendas")
         self.download_podcasts_check = QCheckBox("Baixar Podcasts (Aulas apenas áudio)")
@@ -197,7 +197,7 @@ class SettingsView(QWidget):
         self.download_embedded_check = QCheckBox("Baixar Vídeos na Descrição (recomendado)")
         self.enable_download_history_check = QCheckBox("Habilitar histórico de downloads (Dashboard Web)")
         self.dashboard_port_spin = QSpinBox()
-        self.dashboard_port_spin.setRange(1024, 65535)
+        self.dashboard_port_spin.setMaximum(2147483647)
         self.dashboard_port_spin.setValue(6102)
         self.dashboard_port_spin.setToolTip("Porta padrão: 6102")
 
@@ -303,15 +303,15 @@ class SettingsView(QWidget):
         self.user_agent_edit.setMaximumWidth(600)
 
         self.max_concurrent_downloads_spin = QSpinBox()
-        self.max_concurrent_downloads_spin.setRange(1, 64)
+        self.max_concurrent_downloads_spin.setMaximum(2147483647)
         self.max_concurrent_downloads_spin.setMinimumWidth(64)
 
         self.retry_attempts_spin = QSpinBox()
-        self.retry_attempts_spin.setRange(0, 10)
+        self.retry_attempts_spin.setMaximum(2147483647)
         self.retry_attempts_spin.setMinimumWidth(64)
 
         self.retry_delay_spin = QSpinBox()
-        self.retry_delay_spin.setRange(0, 600)
+        self.retry_delay_spin.setMaximum(2147483647)
         self.retry_delay_spin.setMinimumWidth(64)
         self.auto_reauth_check = QCheckBox("Tentar re-autenticação automática em caso de erro 400/401")
         self.create_resume_summary_check = QCheckBox("Criar JSON de Resumo")
@@ -336,7 +336,7 @@ class SettingsView(QWidget):
         self.proxy_password_edit.setMaximumWidth(600)
 
         self.proxy_port_spin = QSpinBox()
-        self.proxy_port_spin.setRange(0, 65535)
+        self.proxy_port_spin.setMaximum(2147483647)
         self.proxy_port_spin.setMinimumWidth(64)
 
         self.use_whisper_transcription_check = QCheckBox(
