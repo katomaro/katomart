@@ -8,8 +8,8 @@ _INVALID_WIN_CHARS_RE = re.compile(r'[\x00-\x1f<>:"/\\|?*]')
 
 _RESERVED_WIN_NAMES: Set[str] = {
     "CON", "PRN", "AUX", "NUL",
-    "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
-    "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    "COM0", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+    "LPT0", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
 }
 
 
@@ -19,9 +19,10 @@ def sanitize_path_component(name: str, replacement: str = "_") -> str:
 
     This function performs the following actions:
     1. Replaces invalid Windows path characters with a specified replacement string.
-    2. Removes any trailing periods or whitespace, which are not allowed by Windows.
-    3. Checks if the resulting name is a reserved Windows filename (e.g., "CON").
-       If it is, it prepends an underscore to the name.
+    2. Strips leading/trailing whitespace and dots (disallowed by Windows).
+    3. Checks if the stem (portion before the first dot) is a reserved Windows
+       filename (e.g., "CON", "CON.tech", "AUX.pdf"). If so, prepends the
+       replacement string to the full name.
     4. Ensures the resulting name is not empty, returning a replacement if it is.
 
     Args:
@@ -35,7 +36,8 @@ def sanitize_path_component(name: str, replacement: str = "_") -> str:
 
     sanitized_name = sanitized_name.rstrip(" .")
 
-    if sanitized_name.upper() in _RESERVED_WIN_NAMES:
+    stem = sanitized_name.split(".", 1)[0]
+    if stem.upper() in _RESERVED_WIN_NAMES:
         sanitized_name = replacement + sanitized_name
 
     if not sanitized_name:
