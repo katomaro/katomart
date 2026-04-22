@@ -1,5 +1,5 @@
 from PySide6.QtCore import Signal, Qt
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QListWidget, QPushButton, QLabel, QListWidgetItem, QHBoxLayout, QLineEdit, QCheckBox
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QListWidget, QPushButton, QLabel, QListWidgetItem, QHBoxLayout, QLineEdit, QCheckBox, QMessageBox
 from typing import List, Dict, Any
 
 class CourseSelectionView(QWidget):
@@ -79,17 +79,28 @@ class CourseSelectionView(QWidget):
 
     def _filter_items(self, text: str) -> None:
         """Filters the course list based on the search text locally."""
+        previously_selected_ids = set()
+        for i in range(self.course_list.count()):
+            item = self.course_list.item(i)
+            if item.isSelected():
+                course_data = item.data(Qt.ItemDataRole.UserRole) or {}
+                course_id = course_data.get("id")
+                if course_id is not None:
+                    previously_selected_ids.add(course_id)
+
         self.course_list.clear()
         search_text = text.lower()
-        
+
         for course in self._all_courses:
             course_title = course.get("title") or course.get("name") or "Unnamed Course"
             item_name = f"{course_title} - {course.get('seller_name', 'Unknown Seller')}"
-            
+
             if not search_text or search_text in item_name.lower():
                 item = QListWidgetItem(item_name)
                 item.setData(Qt.ItemDataRole.UserRole, course)
                 self.course_list.addItem(item)
+                if course.get("id") in previously_selected_ids:
+                    item.setSelected(True)
 
     def _on_next(self) -> None:
         """Emits the data of the selected courses."""
@@ -98,4 +109,15 @@ class CourseSelectionView(QWidget):
             course_data = item.data(Qt.ItemDataRole.UserRole)
             if course_data:
                 selected_courses.append(course_data)
+
+        if not selected_courses:
+            QMessageBox.warning(
+                self,
+                "Nenhum curso selecionado",
+                "Selecione pelo menos um curso antes de prosseguir.\n\n"
+                "Dica: ao pesquisar, as seleções são mantidas, mas os itens "
+                "filtrados ficam ocultos até a busca ser limpa."
+            )
+            return
+
         self.courses_selected.emit(selected_courses)
