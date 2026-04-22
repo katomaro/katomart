@@ -7,6 +7,7 @@ from .scaleup_downloader import ScaleUpDownloader
 from .safevideo_downloader import SafeVideoDownloader
 from .udemy_video_downloader import UdemyDownloader
 from .gumlet_downloader import GumletDownloader
+from .spalla_downloader import SpallaDownloader
 from src.config.settings_manager import SettingsManager
 
 class DownloaderFactory:
@@ -44,6 +45,8 @@ class DownloaderFactory:
             return GumletDownloader(settings_manager)
         elif "safevideo.com" in url:
             return SafeVideoDownloader(settings_manager)
+        elif "spalla.io" in url:
+            return SpallaDownloader(settings_manager)
         elif ".m3u8" in url:
             return YtdlpDownloader(settings_manager)
         else:

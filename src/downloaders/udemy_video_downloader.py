@@ -392,6 +392,11 @@ class UdemyDownloader(BaseDownloader):
                 header_key = 'User-Agent'
             http_headers[header_key] = value
 
+        course_slug = extra_props.get("course_slug")
+        lecture_id = extra_props.get("lecture_id")
+        if course_slug and lecture_id:
+            http_headers['Referer'] = f"https://www.udemy.com/course/{course_slug}/learn/lecture/{lecture_id}"
+
         ydl_opts = {
             'outtmpl': str(download_path) + ".%(ext)s",
             'noplaylist': True,
