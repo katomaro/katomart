@@ -383,19 +383,32 @@ class UdemyDownloader(BaseDownloader):
     def _download_regular_video(self, video_url: str, session, download_path: Path, extra_props: Dict[str, Any]) -> bool:
         retry_opts = build_ytdlp_retry_config(self.settings)
 
-        http_headers = {}
-        for header, value in session.headers.items():
-            header_key = header
-            if header.lower() == 'cookie':
-                header_key = 'Cookie'
-            elif header.lower() == 'user-agent':
-                header_key = 'User-Agent'
-            http_headers[header_key] = value
+        # Only forward browser-style headers to yt-dlp. Sending the API's
+        # Authorization/X-CSRFToken/X-Udemy-Cache-*/X-Requested-With headers
+        # along with m3u8/ts requests makes Cloudflare's WAF reply 403.
+        def _get(name: str) -> Optional[str]:
+            for k, v in session.headers.items():
+                if k.lower() == name.lower():
+                    return v
+            return None
 
-        course_slug = extra_props.get("course_slug")
-        lecture_id = extra_props.get("lecture_id")
-        if course_slug and lecture_id:
-            http_headers['Referer'] = f"https://www.udemy.com/course/{course_slug}/learn/lecture/{lecture_id}"
+        user_agent = _get('User-Agent')
+        accept_language = _get('Accept-Language') or 'en-US,en;q=0.9'
+        cookie = _get('Cookie')
+
+        http_headers = {
+            'Accept': '*/*',
+            'Accept-Language': accept_language,
+            'Origin': 'https://www.udemy.com',
+            'Referer': 'https://www.udemy.com/',
+            'Sec-Fetch-Dest': 'empty',
+            'Sec-Fetch-Mode': 'cors',
+            'Sec-Fetch-Site': 'cross-site',
+        }
+        if user_agent:
+            http_headers['User-Agent'] = user_agent
+        if cookie:
+            http_headers['Cookie'] = cookie
 
         ydl_opts = {
             'outtmpl': str(download_path) + ".%(ext)s",

@@ -1,6 +1,7 @@
 from typing import Any, Dict, List, Optional
 import logging
 import asyncio
+import random
 import time
 import json
 import re
@@ -473,6 +474,11 @@ AVISO: Nas configurações utilize delay de acesso nas aulas para evitar que a u
 
         while current_url:
             try:
+                if not first_call:
+                    pause = random.uniform(5, 15)
+                    logging.info(f"Aguardando {pause:.1f}s antes de buscar próxima página do currículo (curso {course_id})...")
+                    time.sleep(pause)
+
                 p = params if first_call else None
                 resp = self._session.get(current_url, params=p, timeout=60)
                 resp.raise_for_status()
@@ -552,14 +558,15 @@ AVISO: Nas configurações utilize delay de acesso nas aulas para evitar que a u
 
                 extra_props = {
                     "is_encrypted": is_encrypted,
+                    "course_id": course_id,
+                    "lecture_id": str(lesson_id),
+                    "course_slug": course_slug,
                 }
 
                 if is_encrypted and media_license_token:
                     extra_props["media_license_token"] = media_license_token
                     extra_props["mpd_url"] = mpd_url
                     extra_props["hls_url"] = video_url
-                    extra_props["course_id"] = course_id
-                    extra_props["lecture_id"] = str(lesson_id)
 
                 if video_url or mpd_url:
                     content.videos.append(Video(

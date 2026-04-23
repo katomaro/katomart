@@ -416,42 +416,75 @@ Assinantes ativos podem informar usuario/senha para login automatico.
 
             logger.debug("Cademi v6: fetching content for course %s", course_id)
 
-            modules: List[Dict[str, Any]] = []
+            modules_by_id: Dict[str, Dict[str, Any]] = {}
             lesson_html = ""
 
             try:
-                entry_resp = self._session.get(
-                    f"{self._site_url}/area/conteudo/produto/{course_id}",
-                    timeout=30,
-                    allow_redirects=True,
-                )
-                entry_resp.raise_for_status()
-                final_url = entry_resp.url
-                entry_html = entry_resp.text
+                modulo_ids = self._discover_modules_from_listagem(course_id)
 
-                if "/area/conteudo/aula/" in final_url:
-                    modules = self._parse_sidebar_v6(entry_html)
-                    lesson_html = entry_html
+                if modulo_ids:
+                    for mid in modulo_ids:
+                        if mid in modules_by_id:
+                            continue
+                        try:
+                            mod_resp = self._session.get(
+                                f"{self._site_url}/area/conteudo/modulo/{mid}",
+                                timeout=30,
+                                allow_redirects=True,
+                            )
+                            mod_resp.raise_for_status()
+                        except Exception as exc:
+                            logger.warning("Cademi v6: modulo %s failed: %s", mid, exc)
+                            continue
+
+                        html = mod_resp.text
+                        if not lesson_html and "/area/conteudo/aula/" in mod_resp.url:
+                            lesson_html = html
+                        for m in self._parse_sidebar_v6(html):
+                            if m["id"] not in modules_by_id:
+                                modules_by_id[m["id"]] = m
+                        time.sleep(0.2)
                 else:
-                    entry_soup = BeautifulSoup(entry_html, "html.parser")
-                    hop = (
-                        entry_soup.find("a", href=re.compile(r"/area/conteudo/modulo/\d+"))
-                        or entry_soup.find("a", href=re.compile(r"/area/conteudo/aula/\d+"))
+                    entry_resp = self._session.get(
+                        f"{self._site_url}/area/conteudo/produto/{course_id}",
+                        timeout=30,
+                        allow_redirects=True,
                     )
-                    if hop:
-                        hop_href = hop.get("href", "")
-                        if not hop_href.startswith("http"):
-                            hop_href = f"{self._site_url}{hop_href}"
-                        lesson_resp = self._session.get(hop_href, timeout=30, allow_redirects=True)
-                        lesson_resp.raise_for_status()
-                        lesson_html = lesson_resp.text
-                        modules = self._parse_sidebar_v6(lesson_html)
-                    else:
+                    entry_resp.raise_for_status()
+                    final_url = entry_resp.url
+                    entry_html = entry_resp.text
+
+                    if "/area/conteudo/aula/" in final_url:
+                        for m in self._parse_sidebar_v6(entry_html):
+                            if m["id"] not in modules_by_id:
+                                modules_by_id[m["id"]] = m
                         lesson_html = entry_html
+                    else:
+                        entry_soup = BeautifulSoup(entry_html, "html.parser")
+                        hop = (
+                            entry_soup.find("a", href=re.compile(r"/area/conteudo/modulo/\d+"))
+                            or entry_soup.find("a", href=re.compile(r"/area/conteudo/aula/\d+"))
+                        )
+                        if hop:
+                            hop_href = hop.get("href", "")
+                            if not hop_href.startswith("http"):
+                                hop_href = f"{self._site_url}{hop_href}"
+                            lesson_resp = self._session.get(hop_href, timeout=30, allow_redirects=True)
+                            lesson_resp.raise_for_status()
+                            lesson_html = lesson_resp.text
+                            for m in self._parse_sidebar_v6(lesson_html):
+                                if m["id"] not in modules_by_id:
+                                    modules_by_id[m["id"]] = m
+                        else:
+                            lesson_html = entry_html
 
             except Exception as exc:
                 logger.error("Cademi v6: failed to fetch course %s: %s", course_id, exc)
                 continue
+
+            modules = list(modules_by_id.values())
+            for idx, m in enumerate(modules, start=1):
+                m["order"] = idx
 
             course_entry = course.copy()
             course_entry["title"] = (
@@ -465,6 +498,34 @@ Assinantes ativos podem informar usuario/senha para login automatico.
             time.sleep(0.3)
 
         return all_content
+
+    def _discover_modules_from_listagem(self, course_id: Any) -> List[str]:
+        try:
+            resp = self._session.get(
+                f"{self._site_url}/area/conteudo/listagem/{course_id}",
+                timeout=30,
+                allow_redirects=True,
+            )
+        except Exception as exc:
+            logger.debug("Cademi v6: listagem %s unreachable: %s", course_id, exc)
+            return []
+
+        if not resp.ok or "/area/conteudo/listagem/" not in resp.url:
+            return []
+
+        soup = BeautifulSoup(resp.text, "html.parser")
+        ordered: List[str] = []
+        seen: set = set()
+        for a in soup.find_all("a", href=re.compile(r"/area/conteudo/modulo/\d+")):
+            match = re.search(r"/area/conteudo/modulo/(\d+)", a.get("href", ""))
+            if not match:
+                continue
+            mid = match.group(1)
+            if mid in seen:
+                continue
+            seen.add(mid)
+            ordered.append(mid)
+        return ordered
 
     def _extract_course_title_v6(self, html: str, course_id: Any) -> str:
         if not html:
@@ -556,6 +617,14 @@ Assinantes ativos podem informar usuario/senha para login automatico.
             if "progresso-total" in (group.get("class") or []):
                 continue
 
+            items_container = group.find("div", class_="section-items")
+            if items_container:
+                inner_items = items_container.find_all("div", class_="section-item")
+                if inner_items and all(
+                    "section-next" in (item.get("class") or []) for item in inner_items
+                ):
+                    continue
+
             mod_order = len(modules) + 1
             title_div = group.find("div", class_=re.compile("section-group-titulo"))
             section_id = group.get("data-acesso-secao-id") or str(mod_order)
@@ -573,7 +642,6 @@ Assinantes ativos podem informar usuario/senha para login automatico.
                     raw_text = " ".join(titulo_el.get_text(separator=" ", strip=True).split())
                     module_title = re.sub(r"\s*\d+\s*aulas?\s*$", "", raw_text).strip() or raw_text
 
-            items_container = group.find("div", class_="section-items")
             if not module_title:
                 is_single = bool(items_container) and "single" in (items_container.get("class") or [])
                 module_title = "Conteudo" if is_single else f"Modulo {mod_order}"
@@ -583,6 +651,10 @@ Assinantes ativos podem informar usuario/senha para login automatico.
                 for les_idx, link in enumerate(
                     items_container.find_all("a", href=re.compile(r"/area/conteudo/aula/\d+")), start=1
                 ):
+                    inner = link.find("div", class_="section-item")
+                    if inner and "section-next" in (inner.get("class") or []):
+                        continue
+
                     href = link.get("href", "")
                     item_match = re.search(r"/area/conteudo/aula/(\d+)", href)
                     if not item_match:
@@ -687,28 +759,67 @@ Assinantes ativos podem informar usuario/senha para login automatico.
                     description_type="text",
                 )
 
-        video_div = soup.find("div", class_=re.compile(r"video-pandavideo"))
+        video_div = soup.find("div", class_=re.compile(r"video-(pandavideo|vturb)"))
         if video_div:
             iframe = video_div.find("iframe")
             if iframe and iframe.get("src"):
                 video_url = iframe.get("src")
-                panda_id = video_div.get("data-id", "")
-                content.videos.append(
-                    Video(
-                        video_id=panda_id or str(item_id),
-                        url=video_url,
-                        order=lesson.get("order", 1),
-                        title=lesson.get("title", "Aula"),
-                        size=0,
-                        duration=0,
-                        extra_props={"referer": self._site_url + "/"},
+                data_id = video_div.get("data-id", "")
+                classes = " ".join(video_div.get("class") or [])
+                if "video-vturb" in classes or "converteai" in video_url:
+                    resolved = self._resolve_vturb_video(video_url)
+                    if resolved:
+                        hls_url, vturb_video_id = resolved
+                        content.videos.append(
+                            Video(
+                                video_id=vturb_video_id or data_id or str(item_id),
+                                url=hls_url,
+                                order=lesson.get("order", 1),
+                                title=lesson.get("title", "Aula"),
+                                size=0,
+                                duration=0,
+                                extra_props={"referer": self._site_url + "/"},
+                            )
+                        )
+                    else:
+                        logger.warning(
+                            "Cademi: vturb video %s could not be resolved to HLS", video_url
+                        )
+                else:
+                    content.videos.append(
+                        Video(
+                            video_id=data_id or str(item_id),
+                            url=video_url,
+                            order=lesson.get("order", 1),
+                            title=lesson.get("title", "Aula"),
+                            size=0,
+                            duration=0,
+                            extra_props={"referer": self._site_url + "/"},
+                        )
                     )
-                )
 
         if not content.videos:
             for iframe in soup.find_all("iframe", src=True):
                 src = iframe.get("src", "")
-                if any(p in src for p in ("youtube", "youtu.be", "vimeo", "pandavideo")):
+                if any(p in src for p in ("youtube", "youtu.be", "vimeo", "pandavideo", "converteai")):
+                    if "converteai" in src:
+                        resolved = self._resolve_vturb_video(src)
+                        if resolved:
+                            hls_url, vturb_video_id = resolved
+                            content.videos.append(
+                                Video(
+                                    video_id=vturb_video_id or str(item_id),
+                                    url=hls_url,
+                                    order=lesson.get("order", 1),
+                                    title=lesson.get("title", "Aula"),
+                                    size=0,
+                                    duration=0,
+                                    extra_props={"referer": self._site_url + "/"},
+                                )
+                            )
+                            break
+                        logger.warning("Cademi: converteai iframe %s could not be resolved", src)
+                        continue
                     vid_id = self._extract_video_id(src)
                     content.videos.append(
                         Video(
@@ -761,7 +872,37 @@ Assinantes ativos podem informar usuario/senha para login automatico.
             match = re.search(r"vimeo\.com/(?:video/)?(\d+)", url)
             if match:
                 return match.group(1)
+        if "converteai" in url:
+            match = re.search(r"/players/([a-f0-9]+)", url)
+            if match:
+                return match.group(1)
         return ""
+
+    def _resolve_vturb_video(self, embed_url: str) -> Optional[Tuple[str, str]]:
+        """Fetches the vturb/ConverteAI embed page and builds the HLS master URL.
+
+        Why: yt-dlp does not have a native vturb extractor, but the embed HTML
+        exposes the organization id, video id, and CDN hostname, which together
+        form a stable HLS master URL that yt-dlp can download.
+        """
+        try:
+            resp = self._session.get(embed_url, timeout=30)
+            resp.raise_for_status()
+            body = resp.text
+        except Exception as exc:
+            logger.warning("Cademi: vturb embed fetch failed (%s): %s", embed_url, exc)
+            return None
+
+        oid_match = re.search(r'\boid\s*:\s*["\']([0-9a-f\-]+)', body)
+        vid_match = re.search(r'video\s*:\s*\{[^}]*?\bid\s*:\s*["\']([0-9a-f]+)', body)
+        cdn_match = re.search(r'\bcdn\s*:\s*["\']([^"\']+)', body)
+        if not (oid_match and vid_match):
+            return None
+
+        oid = oid_match.group(1)
+        video_id = vid_match.group(1)
+        cdn = cdn_match.group(1) if cdn_match else "cdn.converteai.net"
+        return f"https://{cdn}/{oid}/{video_id}/main.m3u8", video_id
 
     def download_attachment(
         self, attachment: Attachment, download_path: Path, course_slug: str, course_id: str, module_id: str
