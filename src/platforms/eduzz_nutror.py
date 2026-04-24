@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import json
+import re
 import time
 import asyncio
 from datetime import datetime
@@ -24,6 +25,15 @@ API_BASE_URL = "https://learner-api.nutror.com"
 SEARCH_URL = f"{API_BASE_URL}/learner/course/search"
 MODULES_URL = f"{API_BASE_URL}/learner/course/{{course_hash}}/lessons/v2"
 LESSON_DETAILS_URL = f"{API_BASE_URL}/learner/lessons/{{lesson_hash}}"
+
+IFRAME_SRC_RE = re.compile(r'<iframe[^>]+src=["\']([^"\']+)["\']', re.IGNORECASE)
+
+
+def _extract_iframe_src(raw: Optional[str]) -> Optional[str]:
+    if not raw:
+        return None
+    match = IFRAME_SRC_RE.search(raw)
+    return match.group(1) if match else None
 
 # token dessa plataforma dura 12 minutos.
 
@@ -444,9 +454,17 @@ Para autenticação manual (Token Direto, não recomendado, use credenciais se p
             video_url = None
 
             if type_id == 1:
-                video_url = item.get("embed") or item.get("content")
+                raw = item.get("embed") or item.get("content")
+                video_url = _extract_iframe_src(raw) or raw
                 if video_url:
                     logger.debug(f"Nutror: YouTube video found: {video_url}")
+
+            # Type 2: Generic iframe embed (PandaVideo, etc.)
+            elif type_id == 2:
+                raw = item.get("embed") or item.get("content")
+                video_url = _extract_iframe_src(raw)
+                if video_url:
+                    logger.debug(f"Nutror: iframe embed found (type 2): {video_url}")
 
             # Type 4: Text description
             elif type_id == 4:
