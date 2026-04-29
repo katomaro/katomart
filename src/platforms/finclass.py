@@ -36,8 +36,9 @@ class FinClassPlatform(BasePlatform):
     """
     FinClass platform integration.
 
-    Auth: POST core.finclass.com/users/user/login -> response header `sessionid`.
-    All authed requests carry `sessionid` + X-gprim-spec{dev,nav,ver} headers.
+    Auth: POST core.finclass.com/users/user/login -> JWT in `data.token` body.
+    All authed requests carry `Authorization: Bearer <jwt>` plus the
+    X-gprim-spec{dev,nav,ver} headers required by the API.
 
     Catalog: GET /learning/courses (single page, paginates trivially if needed).
     Course detail: GET /learning/courses/{id} returns moduleEntities w/ full lessons.
@@ -48,7 +49,7 @@ class FinClassPlatform(BasePlatform):
 
     def __init__(self, api_service: ApiService, settings_manager: SettingsManager):
         super().__init__(api_service, settings_manager)
-        self._sessionid: Optional[str] = None
+        self._access_token: Optional[str] = None
         self._user_id: Optional[str] = None
         # Mark-watched gated until per-platform settings exist (see mark_lesson_watched).
         # TODO: expose via SettingsManager per-platform settings once supported.
@@ -68,14 +69,15 @@ Como autenticar no FinClass:
 Opção 1 — Usuário e senha (recomendado):
 1) Informe o e-mail e a senha cadastrados na FinClass.
 2) O Katomart fará login em https://core.finclass.com/users/user/login e
-   capturará o cabeçalho `sessionid` da resposta automaticamente.
+   extrairá o token JWT do corpo da resposta (campo `data.token`).
 
-Opção 2 — Colar o `sessionid` manualmente (caso já tenha capturado):
+Opção 2 — Colar o JWT manualmente (caso já tenha capturado):
 1) Abra https://app.finclass.com em seu navegador e faça login normalmente.
 2) Abra as Ferramentas de Desenvolvedor (F12) -> aba Rede (Network).
-3) Selecione qualquer requisição feita para o domínio `core.finclass.com`.
-4) Na aba "Cabeçalhos" (Headers) -> "Cabeçalhos da requisição" copie o valor
-   do header `sessionid` (formato UUID, ex.: `e5ae88ee-4217-43b4-8979-b4de160b4517`).
+3) Localize a requisição POST para `core.finclass.com/users/user/login` e
+   copie o valor de `data.token` da resposta (começa com `eyJ...`).
+4) Alternativamente, copie o valor do header `Authorization` (sem o prefixo
+   `Bearer `) de qualquer requisição autenticada.
 5) Cole esse valor no campo "Token de Acesso".
 
 Observação: a FinClass não oferece 2FA ou OTP no momento.
@@ -86,20 +88,23 @@ Observação: a FinClass não oferece 2FA ou OTP no momento.
         username = (credentials.get("username") or "").strip()
         password = (credentials.get("password") or "").strip()
 
-        sessionid: Optional[str] = None
+        access_token: Optional[str] = None
 
         if username and password:
-            sessionid = self._login_with_credentials(username, password)
+            access_token = self._login_with_credentials(username, password)
             self.credentials = credentials
         elif token:
-            sessionid = token
+            # Allow users to paste the JWT with or without the `Bearer ` prefix.
+            if token.lower().startswith("bearer "):
+                token = token.split(" ", 1)[1].strip()
+            access_token = token
         else:
-            raise ValueError("Informe e-mail e senha ou um token (sessionid) válido.")
+            raise ValueError("Informe e-mail e senha ou um token JWT válido.")
 
-        if not sessionid:
-            raise ConnectionError("Não foi possível obter o sessionid da FinClass.")
+        if not access_token:
+            raise ConnectionError("Não foi possível obter o token JWT da FinClass.")
 
-        self._configure_session(sessionid)
+        self._configure_session(access_token)
 
         try:
             self._user_id = self._fetch_user_id()
@@ -139,30 +144,62 @@ Observação: a FinClass não oferece 2FA ou OTP no momento.
                 f"Login FinClass retornou status {response.status_code}: {response.text[:200]}"
             )
 
-        # sessionid is delivered in the response *headers*, not in the body.
-        sessionid = response.headers.get("sessionid") or response.headers.get("Sessionid")
-        if not sessionid:
-            raise ConnectionError(
-                "Login FinClass não retornou o cabeçalho `sessionid`. "
-                "Verifique se há proxy/CDN reescrevendo headers."
-            )
-        return sanitize_token(sessionid.strip())
+        # Token returned as JWT in body: {"status": true, "data": {"token": "eyJ..."}}.
+        # Accept a few alternate envelopes defensively in case the API evolves.
+        try:
+            payload = response.json() or {}
+        except ValueError as exc:
+            raise ConnectionError(f"Resposta de login inválida: {exc}") from exc
 
-    def _configure_session(self, sessionid: str) -> None:
-        self._sessionid = sessionid
+        candidates = []
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if isinstance(data, dict):
+            candidates += [data.get("token"), data.get("accessToken"), data.get("jwt")]
+        if isinstance(payload, dict):
+            candidates += [payload.get("token"), payload.get("accessToken")]
+        # Header fallback: some deployments may still expose it (legacy capture).
+        candidates += [response.headers.get("authorization"), response.headers.get("sessionid")]
+
+        access_token = next((c for c in candidates if c), None)
+        if not access_token:
+            header_names = sorted(response.headers.keys())
+            body_preview = (response.text or "")[:300]
+            logger.error(
+                "FinClass login sem token. Headers=%s Body=%s",
+                header_names,
+                body_preview,
+            )
+            raise ConnectionError(
+                "Login FinClass não retornou um token JWT. "
+                "Tente colar o JWT manualmente via campo Token."
+            )
+
+        access_token = str(access_token).strip()
+        if access_token.lower().startswith("bearer "):
+            access_token = access_token.split(" ", 1)[1].strip()
+        return sanitize_token(access_token)
+
+    def _configure_session(self, access_token: str) -> None:
+        self._access_token = access_token
         self._session = requests.Session()
         self._session.headers.update({
             "Accept": "application/json, text/plain, */*",
+            "Authorization": f"Bearer {access_token}",
             "Origin": WEB_ORIGIN,
             "Referer": f"{WEB_ORIGIN}/",
             "User-Agent": self._settings.user_agent,
-            "sessionid": sessionid,
             "X-gprim-specdev": "WEB",
             "X-gprim-specnav": self._settings.user_agent,
             "X-gprim-specver": GPRIM_SPECVER,
         })
 
     def _fetch_user_id(self) -> Optional[str]:
+        # Prefer decoding the JWT — userID is in the payload claim and skips a roundtrip.
+        token = self._access_token
+        if token:
+            user_id = self._decode_jwt_user_id(token)
+            if user_id:
+                return user_id
         if not self._session:
             return None
         response = self._session.get(ME_URL, timeout=30)
@@ -173,6 +210,23 @@ Observação: a FinClass não oferece 2FA ou OTP no momento.
         except ValueError:
             return None
         return data.get("userID") or data.get("userId") or data.get("id")
+
+    @staticmethod
+    def _decode_jwt_user_id(token: str) -> Optional[str]:
+        import base64
+        import json as _json
+        parts = token.split(".")
+        if len(parts) < 2:
+            return None
+        payload_b64 = parts[1]
+        # JWT base64url, no padding.
+        payload_b64 += "=" * (-len(payload_b64) % 4)
+        try:
+            decoded = base64.urlsafe_b64decode(payload_b64.encode("ascii"))
+            claims = _json.loads(decoded.decode("utf-8"))
+        except Exception:
+            return None
+        return claims.get("userID") or claims.get("userId") or claims.get("sub")
 
     # -------------------------------------------------------------- catalog
 
@@ -460,14 +514,64 @@ Observação: a FinClass não oferece 2FA ou OTP no momento.
         # Gated by self._mark_watched_enabled. Until per-platform settings exist,
         # default behaviour is to skip without erroring.
         # TODO: expose self._mark_watched_enabled via SettingsManager per-platform
-        #       settings once supported, allowing users to opt in.
+        #       settings once supported, allowing users to opt in to auto-mark
+        #       downloaded lessons as watched.
         if not self._mark_watched_enabled:
             logger.info(
                 "FinClass: mark_lesson_watched desativado por padrão; ignorando aula %s.",
                 lesson.get("id"),
             )
             return
-        raise NotImplementedError("FinClass.mark_lesson_watched ativa pendente (Batch 01.4).")
+
+        if not watched:
+            # FinClass content-follow has no observed 'unwatch' verb; skip rather
+            # than guess at a destructive payload.
+            logger.warning(
+                "FinClass: desmarcar aula como não-assistida não é suportado; ignorando."
+            )
+            return
+
+        if not self._session:
+            raise ConnectionError("Sessão FinClass não autenticada.")
+
+        lesson_id = lesson.get("id") or (lesson.get("raw") or {}).get("lessonID")
+        course_id = lesson.get("course_id") or (lesson.get("raw") or {}).get("courseID")
+        if not lesson_id or not course_id:
+            logger.warning("FinClass: mark_lesson_watched sem lesson/course id.")
+            return
+
+        if not self._user_id:
+            try:
+                self._user_id = self._fetch_user_id()
+            except Exception as exc:
+                logger.warning("FinClass: não foi possível resolver userID: %s", exc)
+        if not self._user_id:
+            logger.warning("FinClass: userID indisponível; abortando mark_lesson_watched.")
+            return
+
+        media_ms = ((lesson.get("raw") or {}).get("lessonMedia") or {}).get("mediaMilliseconds") or 0
+        payload = {
+            "courseID": course_id,
+            "lessonID": lesson_id,
+            "userID": self._user_id,
+            "contentFollowMilliSeconds": int(media_ms),
+            "contentFollowPercentual": 100,
+        }
+
+        try:
+            response = self._session.post(CONTENT_FOLLOW_URL, json=payload, timeout=30)
+        except requests.RequestException as exc:
+            logger.error("FinClass: erro de rede ao marcar aula assistida: %s", exc)
+            return
+        if response.status_code not in (200, 201, 204):
+            logger.error(
+                "FinClass: falha ao marcar aula %s (status=%s, body=%s).",
+                lesson_id,
+                response.status_code,
+                response.text[:200],
+            )
+            return
+        logger.info("FinClass: aula %s marcada como assistida.", lesson_id)
 
 
 PlatformFactory.register_platform("FinClass", FinClassPlatform)
