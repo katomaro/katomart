@@ -2,6 +2,8 @@ from PySide6.QtCore import Signal, Qt
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QListWidget, QPushButton, QLabel, QListWidgetItem, QHBoxLayout, QLineEdit, QCheckBox, QMessageBox
 from typing import List, Dict, Any
 
+from src.utils.filesystem import strip_invisible_chars
+
 class CourseSelectionView(QWidget):
     """Second screen: allows user to select courses."""
     courses_selected = Signal(list)
@@ -92,8 +94,13 @@ class CourseSelectionView(QWidget):
         search_text = text.lower()
 
         for course in self._all_courses:
-            course_title = course.get("title") or course.get("name") or "Unnamed Course"
-            item_name = f"{course_title} - {course.get('seller_name', 'Unknown Seller')}"
+            # Defensive: any platform may surface titles with invisible
+            # Unicode (HANGUL FILLER, ZWSP, etc.) that wreck list alignment.
+            course_title = strip_invisible_chars(
+                course.get("title") or course.get("name") or "Unnamed Course"
+            )
+            seller_name = strip_invisible_chars(course.get("seller_name") or "Unknown Seller")
+            item_name = f"{course_title} - {seller_name}"
 
             if not search_text or search_text in item_name.lower():
                 item = QListWidgetItem(item_name)

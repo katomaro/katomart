@@ -10,6 +10,7 @@ from src.app.api_service import ApiService
 from src.app.models import Attachment, Description, LessonContent, Video
 from src.config.settings_manager import SettingsManager
 from src.platforms.base import AuthField, BasePlatform, PlatformFactory, sanitize_token
+from src.utils.filesystem import strip_invisible_chars
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,17 @@ _PAGE_SIZE = 100
 
 # Whitelist of course statuses to surface. Extend as new statuses appear.
 _ALLOWED_COURSE_STATUSES = {"published"}
+
+def _clean_title(value):
+    """Normalize a title.
+
+    Delegates to ``utils.filesystem.strip_invisible_chars`` so the same
+    invisible-character set drives platform output, path sanitization, and
+    UI rendering.
+    """
+    if not value:
+        return ""
+    return strip_invisible_chars(str(value))
 
 
 class FinClassPlatform(BasePlatform):
@@ -300,13 +312,16 @@ Observação: a FinClass não oferece 2FA ou OTP no momento.
         medias = raw.get("courseMedias") or {}
         cover = medias.get("thumb") or medias.get("poster") or medias.get("banner")
 
+        title = _clean_title(raw.get("courseTitle")) or "Curso sem nome"
+        seller = _clean_title(raw.get("courseCenter")) or "FinClass"
+
         return {
             "id": course_id,
-            "name": raw.get("courseTitle") or "Curso sem nome",
-            "title": raw.get("courseTitle") or "Curso sem nome",
-            "description": raw.get("courseDescription") or "",
+            "name": title,
+            "title": title,
+            "description": (raw.get("courseDescription") or "").strip(),
             "cover_url": cover,
-            "seller_name": raw.get("courseCenter") or "FinClass",
+            "seller_name": seller,
             "raw": raw,
         }
 
@@ -332,7 +347,7 @@ Observação: a FinClass não oferece 2FA ou OTP no momento.
                 ordered_lesson_ids = mod.get("moduleLessonsID") or list(entities_by_id.keys())
 
             module_id = mod.get("moduleID") or f"{course_id}:{mod_index}"
-            module_title = mod.get("moduleTitle") or f"Módulo {mod_index}"
+            module_title = _clean_title(mod.get("moduleTitle")) or f"Módulo {mod_index}"
 
             lessons: List[Dict[str, Any]] = []
             for lesson_index, lesson_id in enumerate(ordered_lesson_ids, start=1):
@@ -346,7 +361,7 @@ Observação: a FinClass não oferece 2FA ou OTP no momento.
                     continue
                 lessons.append({
                     "id": lesson_id,
-                    "title": entity.get("lessonTitle") or f"Aula {lesson_index}",
+                    "title": _clean_title(entity.get("lessonTitle")) or f"Aula {lesson_index}",
                     "order": lesson_index,
                     "course_id": course_id,
                     "module_id": module_id,
@@ -379,7 +394,7 @@ Observação: a FinClass não oferece 2FA ou OTP no momento.
         content = LessonContent()
         raw = lesson.get("raw") or {}
         lesson_id = lesson.get("id") or raw.get("lessonID") or ""
-        title = lesson.get("title") or raw.get("lessonTitle") or "Aula"
+        title = lesson.get("title") or _clean_title(raw.get("lessonTitle")) or "Aula"
 
         description_text = raw.get("lessonDescription") or ""
         if description_text:

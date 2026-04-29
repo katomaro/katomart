@@ -6,6 +6,34 @@ from pathlib import Path
 
 _INVALID_WIN_CHARS_RE = re.compile(r'[\x00-\x1f<>:"/\\|?*]')
 
+# Invisible / zero-width / filler Unicode chars that pass str.strip() but break
+# UI rendering and path layout (seen on FinClass titles like "Fintubeㅤㅤ").
+_INVISIBLE_CHARS = (
+    " "  # NO-BREAK SPACE
+    "​‌‍‎‏"  # ZERO WIDTH SPACE/NJ/J/LRM/RLM
+    "⁠"  # WORD JOINER
+    "⠀"  # BRAILLE PATTERN BLANK
+    "　"  # IDEOGRAPHIC SPACE
+    "ㅤ"  # HANGUL FILLER
+    "﻿"  # ZERO WIDTH NO-BREAK SPACE / BOM
+)
+
+
+def strip_invisible_chars(value: str) -> str:
+    """Strip ASCII whitespace plus invisible Unicode chars from both ends.
+
+    Useful for normalizing user-facing titles received from external APIs
+    where trailing/leading invisible characters (e.g. HANGUL FILLER U+3164)
+    are common and break path layout or UI alignment.
+    """
+    if not value:
+        return value
+    text = value.strip()
+    text = text.strip(_INVISIBLE_CHARS)
+    text = text.strip()
+    return text
+
+
 _RESERVED_WIN_NAMES: Set[str] = {
     "CON", "PRN", "AUX", "NUL",
     "COM0", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
@@ -34,6 +62,7 @@ def sanitize_path_component(name: str, replacement: str = "_") -> str:
     """
     sanitized_name = _INVALID_WIN_CHARS_RE.sub(replacement, name)
 
+    sanitized_name = strip_invisible_chars(sanitized_name)
     sanitized_name = sanitized_name.rstrip(" .")
 
     stem = sanitized_name.split(".", 1)[0]
