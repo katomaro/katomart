@@ -1,0 +1,134 @@
+# Byte-compiled / optimized
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+cover/
+
+# Environments
+.env
+.env.*
+!.env.example
+.venv
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# IDEs / editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Type checkers / linters
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+.ruff_cache/
+
+# Jupyter
+.ipynb_checkpoints
+profile_default/
+ipython_config.py
+
+# Project-specific
+logs/
+*.log
+cdm/
+downloads/
+output/
+courses/
+tmp/
+temp/
+*.tmp
+
+# Credentials / secrets
+*.pem
+*.key
+secrets.json
+credentials.json
+config.local.*
+cookies.txt
+*.cookies
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Media artifacts (downloader output)
+*.mp4
+*.mkv
+*.webm
+*.m4a
+*.mp3
+*.ts
+*.m3u8
+*.vtt
+*.srt
+
+# OS
+.AppleDouble
+.LSOverride
+Icon?
+ehthumbs.db
+Desktop.ini
+
+# mise / asdf
+.tool-versions
+
+# Backups
+*.bak
+*.orig
+
+# jj
+.jj/
