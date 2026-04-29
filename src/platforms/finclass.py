@@ -174,13 +174,144 @@ Observação: a FinClass não oferece 2FA ou OTP no momento.
             return None
         return data.get("userID") or data.get("userId") or data.get("id")
 
-    # ------------------------------------------------- catalog (Batch 01.2)
+    # -------------------------------------------------------------- catalog
 
     def fetch_courses(self) -> List[Dict[str, Any]]:
-        raise NotImplementedError("FinClass.fetch_courses pendente (Batch 01.2).")
+        if not self._session:
+            raise ConnectionError("Sessão FinClass não autenticada.")
+
+        courses: List[Dict[str, Any]] = []
+        page = 1
+        while True:
+            params = {"page": page, "perPage": _PAGE_SIZE}
+            response = self._session.get(COURSES_URL, params=params, timeout=30)
+            response.raise_for_status()
+            try:
+                payload = response.json() or {}
+            except ValueError as exc:
+                raise ConnectionError(f"Resposta inválida em /learning/courses: {exc}") from exc
+
+            data = payload.get("data") or []
+            for raw in data:
+                normalized = self._normalize_course(raw)
+                if normalized is not None:
+                    courses.append(normalized)
+
+            if not _PAGINATION_ENABLED or not data or len(data) < _PAGE_SIZE:
+                break
+            page += 1
+
+        logger.info("FinClass: %d cursos retornados.", len(courses))
+        return courses
 
     def fetch_course_content(self, courses: List[Dict[str, Any]]) -> Dict[str, Any]:
-        raise NotImplementedError("FinClass.fetch_course_content pendente (Batch 01.2).")
+        if not self._session:
+            raise ConnectionError("Sessão FinClass não autenticada.")
+
+        all_content: Dict[str, Any] = {}
+        for course in courses:
+            course_id = course.get("id")
+            if not course_id:
+                continue
+            try:
+                detail = self._fetch_course_detail(course_id)
+            except Exception as exc:
+                logger.error("FinClass: falha ao buscar detalhes do curso %s: %s", course_id, exc)
+                continue
+
+            modules = self._build_modules(course_id, detail)
+            entry = course.copy()
+            entry["modules"] = modules
+            entry["raw_detail"] = detail
+            all_content[str(course_id)] = entry
+
+        return all_content
+
+    # -------------------------------------------------------- catalog helpers
+
+    def _normalize_course(self, raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        status = (raw.get("courseStatus") or "").lower()
+        if status not in _ALLOWED_COURSE_STATUSES:
+            logger.debug(
+                "FinClass: curso %s ignorado (status=%s).",
+                raw.get("courseID"),
+                status,
+            )
+            return None
+
+        course_id = raw.get("courseID")
+        if not course_id:
+            return None
+
+        medias = raw.get("courseMedias") or {}
+        cover = medias.get("thumb") or medias.get("poster") or medias.get("banner")
+
+        return {
+            "id": course_id,
+            "name": raw.get("courseTitle") or "Curso sem nome",
+            "title": raw.get("courseTitle") or "Curso sem nome",
+            "description": raw.get("courseDescription") or "",
+            "cover_url": cover,
+            "seller_name": raw.get("courseCenter") or "FinClass",
+            "raw": raw,
+        }
+
+    def _fetch_course_detail(self, course_id: str) -> Dict[str, Any]:
+        url = COURSE_DETAIL_URL.format(course_id=course_id)
+        response = self._session.get(url, timeout=30)
+        response.raise_for_status()
+        payload = response.json() or {}
+        return payload.get("data") or {}
+
+    def _build_modules(self, course_id: str, detail: Dict[str, Any]) -> List[Dict[str, Any]]:
+        modules_out: List[Dict[str, Any]] = []
+        course_modules = detail.get("courseModules") or []
+
+        for mod_index, mod in enumerate(course_modules, start=1):
+            entities_by_id: Dict[str, Dict[str, Any]] = {
+                e.get("lessonID"): e for e in (mod.get("moduleEntities") or []) if e.get("lessonID")
+            }
+
+            order = mod.get("moduleOrder") or []
+            ordered_lesson_ids = [item.get("lessonID") for item in order if item.get("lessonID")]
+            if not ordered_lesson_ids:
+                ordered_lesson_ids = mod.get("moduleLessonsID") or list(entities_by_id.keys())
+
+            module_id = mod.get("moduleID") or f"{course_id}:{mod_index}"
+            module_title = mod.get("moduleTitle") or f"Módulo {mod_index}"
+
+            lessons: List[Dict[str, Any]] = []
+            for lesson_index, lesson_id in enumerate(ordered_lesson_ids, start=1):
+                entity = entities_by_id.get(lesson_id)
+                if not entity:
+                    logger.debug(
+                        "FinClass: lessonID %s presente em moduleOrder mas sem moduleEntities (curso=%s).",
+                        lesson_id,
+                        course_id,
+                    )
+                    continue
+                lessons.append({
+                    "id": lesson_id,
+                    "title": entity.get("lessonTitle") or f"Aula {lesson_index}",
+                    "order": lesson_index,
+                    "course_id": course_id,
+                    "module_id": module_id,
+                    "locked": False,
+                    "extra_props": {
+                        "is_trailer": entity.get("lessonType") == "trailer",
+                    },
+                    "raw": entity,
+                })
+
+            modules_out.append({
+                "id": module_id,
+                "title": module_title,
+                "order": mod_index,
+                "locked": False,
+                "lessons": lessons,
+            })
+
+        return modules_out
 
     # -------------------------------------------- lesson details (Batch 01.3)
 
