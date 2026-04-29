@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 import requests
 
 from src.app.api_service import ApiService
-from src.app.models import Attachment, LessonContent
+from src.app.models import Attachment, Description, LessonContent, Video
 from src.config.settings_manager import SettingsManager
 from src.platforms.base import AuthField, BasePlatform, PlatformFactory, sanitize_token
 
@@ -313,7 +313,7 @@ Observação: a FinClass não oferece 2FA ou OTP no momento.
 
         return modules_out
 
-    # -------------------------------------------- lesson details (Batch 01.3)
+    # ------------------------------------------------------- lesson details
 
     def fetch_lesson_details(
         self,
@@ -322,7 +322,109 @@ Observação: a FinClass não oferece 2FA ou OTP no momento.
         course_id: str,
         module_id: str,
     ) -> LessonContent:
-        raise NotImplementedError("FinClass.fetch_lesson_details pendente (Batch 01.3).")
+        content = LessonContent()
+        raw = lesson.get("raw") or {}
+        lesson_id = lesson.get("id") or raw.get("lessonID") or ""
+        title = lesson.get("title") or raw.get("lessonTitle") or "Aula"
+
+        description_text = raw.get("lessonDescription") or ""
+        if description_text:
+            # FinClass returns plain text; expose as text so workers save .txt.
+            content.description = Description(text=description_text, description_type="text")
+
+        media = raw.get("lessonMedia") or {}
+        video_url = media.get("mediaDash") or media.get("mediaSource") or media.get("mediaHls")
+
+        if video_url:
+            duration_ms = media.get("mediaMilliseconds") or 0
+            duration_s = int(duration_ms / 1000) if duration_ms else 0
+            fallback_urls = [
+                u for u in (media.get("mediaSource"), media.get("mediaHls"))
+                if u and u != video_url
+            ]
+            content.videos.append(Video(
+                video_id=str(media.get("mediaID") or lesson_id),
+                url=video_url,
+                order=lesson.get("order", 1) or 1,
+                title=title,
+                size=0,
+                duration=duration_s,
+                extra_props={
+                    "referer": f"{WEB_ORIGIN}/",
+                    # NOTE: workers iterate Video list one-shot; fallback URLs are
+                    # carried here for any future fallback-aware downloader logic.
+                    # If yt-dlp fails on the .mpd, these are the next URLs to try.
+                    "fallback_urls": fallback_urls,
+                },
+            ))
+        else:
+            logger.warning(
+                "FinClass: aula %s sem lessonMedia utilizável (curso=%s).",
+                lesson_id,
+                course_id,
+            )
+
+        for idx, file_entry in enumerate(raw.get("lessonFiles") or [], start=1):
+            url = file_entry.get("fileAddress") or file_entry.get("fileURL")
+            if not url:
+                continue
+            filename = (
+                file_entry.get("filePublicName")
+                or file_entry.get("fileName")
+                or f"anexo-{idx}"
+            )
+            extension = ""
+            if "." in filename:
+                extension = filename.rsplit(".", 1)[-1]
+            elif "." in url.split("?")[0]:
+                extension = url.split("?")[0].rsplit(".", 1)[-1]
+            content.attachments.append(Attachment(
+                attachment_id=f"{lesson_id}:file:{idx}",
+                url=url,
+                filename=filename,
+                order=idx,
+                extension=extension,
+                size=int(file_entry.get("fileSize") or 0),
+            ))
+
+        # Subtitles: best-effort. FinClass may expose them via either field.
+        subtitle_entries = list(raw.get("lessonSubtitles") or []) + list(media.get("mediaSubtitle") or [])
+        if subtitle_entries:
+            for sub_idx, sub in enumerate(subtitle_entries, start=1):
+                sub_url, sub_lang = self._extract_subtitle(sub)
+                if not sub_url:
+                    continue
+                ext = "vtt"
+                clean = sub_url.split("?")[0]
+                if "." in clean:
+                    ext = clean.rsplit(".", 1)[-1].lower()
+                content.attachments.append(Attachment(
+                    attachment_id=f"{lesson_id}:sub:{sub_idx}",
+                    url=sub_url,
+                    filename=f"legenda-{sub_lang or sub_idx}.{ext}",
+                    order=900 + sub_idx,
+                    extension=ext,
+                    size=0,
+                ))
+        else:
+            logger.info("FinClass: aula %s sem legendas disponíveis.", lesson_id)
+
+        return content
+
+    def _extract_subtitle(self, sub: Any) -> tuple[Optional[str], Optional[str]]:
+        """Best-effort extraction of (url, language) from heterogeneous subtitle entries."""
+        if isinstance(sub, str):
+            return sub, None
+        if not isinstance(sub, dict):
+            return None, None
+        url = (
+            sub.get("subtitleURL")
+            or sub.get("url")
+            or sub.get("fileAddress")
+            or sub.get("fileURL")
+        )
+        lang = sub.get("subtitleLanguage") or sub.get("language") or sub.get("lang")
+        return url, lang
 
     def download_attachment(
         self,
@@ -332,7 +434,25 @@ Observação: a FinClass não oferece 2FA ou OTP no momento.
         course_id: str,
         module_id: str,
     ) -> bool:
-        raise NotImplementedError("FinClass.download_attachment pendente (Batch 01.3).")
+        if not self._session:
+            raise ConnectionError("Sessão FinClass não autenticada.")
+        url = attachment.url
+        if not url:
+            logger.error("FinClass: anexo sem URL: %s", attachment.filename)
+            return False
+        try:
+            # Public URLs on assets.finclass.com don't strictly need auth, but
+            # using the platform session preserves UA/referer parity.
+            with self._session.get(url, stream=True, timeout=60) as response:
+                response.raise_for_status()
+                with open(download_path, "wb") as fh:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if chunk:
+                            fh.write(chunk)
+            return True
+        except Exception as exc:
+            logger.error("FinClass: falha ao baixar anexo %s: %s", attachment.filename, exc)
+            return False
 
     # ------------------------------------------- mark watched (Batch 01.4)
 
