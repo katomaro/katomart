@@ -260,6 +260,11 @@ Assinantes ativos podem informar usuario/senha para login automatico.
                 name = (img.get("alt", "").strip() if img else "") or ""
                 discovered[pid] = name
 
+            for pid, name in self._extract_courses_from_vitrine_sections(soup).items():
+                if pid in discovered:
+                    continue
+                discovered[pid] = name
+
             for link in soup.find_all("a", href=re.compile(r"/area/vitrine/\d+")):
                 href = link.get("href", "")
                 normalized = href.split("?", 1)[0].split("#", 1)[0]
@@ -287,6 +292,27 @@ Assinantes ativos podem informar usuario/senha para login automatico.
             "Cademi v6: found %d courses across %d vitrines", len(courses), len(visited_vitrines)
         )
         return sorted(courses, key=lambda c: c.get("name", ""))
+
+    def _extract_courses_from_vitrine_sections(self, soup: BeautifulSoup) -> Dict[str, str]:
+        courses: Dict[str, str] = {}
+
+        for vitrine in soup.find_all("div", class_=re.compile(r"\bvitrine\b")):
+            pid = ""
+            container = vitrine.find(attrs={"data-acesso-produto-id": True})
+            if container:
+                pid = (container.get("data-acesso-produto-id") or "").strip()
+            if not pid:
+                continue
+
+            title = ""
+            title_el = vitrine.find(class_=re.compile(r"main-title"))
+            if title_el:
+                raw = " ".join(title_el.get_text(separator=" ", strip=True).split())
+                title = raw
+
+            courses[pid] = title
+
+        return courses
 
     def _resolve_course_name_v6(self, product_id: str) -> str:
         try:
