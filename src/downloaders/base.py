@@ -20,6 +20,22 @@ class BaseDownloader(ABC):
         self.settings_manager = settings_manager
 
     @staticmethod
+    def build_js_runtime_opts(settings) -> dict:
+        """Build the yt-dlp `js_runtimes` dict from settings.
+
+        Mirrors the CLI flag `--js-runtimes RUNTIME[:PATH]`. Returning an
+        empty dict leaves yt-dlp's default behavior (deno) untouched.
+        """
+        name = (getattr(settings, "js_runtime", "") or "").strip().lower()
+        if not name:
+            return {}
+        cfg: dict = {}
+        path = (getattr(settings, "js_runtime_path", "") or "").strip()
+        if path:
+            cfg["path"] = path
+        return {"js_runtimes": {name: cfg}}
+
+    @staticmethod
     def build_quality_opts(settings) -> dict:
         """Build yt-dlp format/postprocessor options based on quality settings."""
         opts: dict = {}

@@ -74,6 +74,7 @@ class SafeVideoDownloader(BaseDownloader):
             }
 
             ydl_opts.update(self.build_quality_opts(settings))
+            ydl_opts.update(self.build_js_runtime_opts(settings))
 
             if settings.ffmpeg_path:
                 ydl_opts['ffmpeg_location'] = settings.ffmpeg_path

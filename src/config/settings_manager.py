@@ -80,6 +80,8 @@ class AppSettings:
     skip_attachment_download: bool = False
     skip_existing_files: bool = False
     youtube_cookies_path: str = ""
+    js_runtime: str = ""
+    js_runtime_path: str = ""
     pause_on_partial_count: int = 0
     pause_on_error_count: int = 0
     enable_download_history: bool = False

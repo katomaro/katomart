@@ -235,6 +235,7 @@ class BunnyStreamDownloader(BaseDownloader):
                 1, self.settings.max_concurrent_segment_downloads
             ),
             **retry_opts,
+            **self.build_js_runtime_opts(self.settings),
         }
 
         downloaded: List[str] = []
@@ -330,6 +331,7 @@ class BunnyStreamDownloader(BaseDownloader):
             ),
             **retry_opts,
             **self.build_quality_opts(self.settings),
+            **self.build_js_runtime_opts(self.settings),
         }
 
         if self.settings.download_subtitles:

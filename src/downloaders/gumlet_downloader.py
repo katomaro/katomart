@@ -88,6 +88,7 @@ class GumletDownloader(BaseDownloader):
         }
 
         ydl_opts.update(self.build_quality_opts(self.settings))
+        ydl_opts.update(self.build_js_runtime_opts(self.settings))
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:

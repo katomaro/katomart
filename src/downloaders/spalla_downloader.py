@@ -177,6 +177,7 @@ class SpallaDownloader(BaseDownloader):
             **retry_opts,
         }
         ydl_opts.update(self.build_quality_opts(self.settings))
+        ydl_opts.update(self.build_js_runtime_opts(self.settings))
 
         if ffmpeg_exe:
             ydl_opts["ffmpeg_location"] = str(Path(ffmpeg_exe).parent)

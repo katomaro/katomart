@@ -267,6 +267,35 @@ class SettingsView(QWidget):
             "Caminho para o arquivo de cookies do YouTube (formato Netscape)."
         )
 
+        self.js_runtime_combo = QComboBox()
+        self.js_runtime_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.js_runtime_combo.setMaximumWidth(600)
+        self.js_runtimes = {
+            "Padrao do yt-dlp (Deno)": "",
+            "Node.js": "node",
+            "Deno": "deno",
+            "Bun": "bun",
+            "QuickJS": "quickjs",
+        }
+        for name, code in self.js_runtimes.items():
+            self.js_runtime_combo.addItem(name, userData=code)
+        self.js_runtime_combo.setToolTip(
+            "Runtime JavaScript usado pelo yt-dlp para resolver desafios (ex: YouTube n/sig).\n"
+            "Equivale ao parametro de linha de comando --js-runtimes.\n"
+            "Use Node.js se o Deno nao estiver instalado nesta maquina."
+        )
+
+        self.js_runtime_path_edit = QLineEdit()
+        self.js_runtime_path_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.js_runtime_path_edit.setMaximumWidth(600)
+        self.js_runtime_path_edit.setPlaceholderText("Opcional. Ex: C:/Program Files/nodejs/node.exe")
+        self.js_runtime_path_edit.setToolTip(
+            "Caminho explicito do executavel do runtime selecionado.\n"
+            "Deixe em branco para que o yt-dlp procure no PATH do sistema."
+        )
+
+        self.js_runtime_combo.currentIndexChanged.connect(self._update_js_runtime_path_state)
+
         self.download_widevine_check = QCheckBox("Baixar Widevine")
         self.download_widevine_check.toggled.connect(self._on_download_widevine_toggled)
 
@@ -288,6 +317,8 @@ class SettingsView(QWidget):
         self._form_layout.addRow("Caminho do FFmpeg:", self.ffmpeg_path_edit)
         self._form_layout.addRow("Caminho do Bento4 SDK:", self.bento4_path_edit)
         self._form_layout.addRow("Cookies do YouTube:", self.youtube_cookies_path_edit)
+        self._form_layout.addRow("Runtime JavaScript (yt-dlp):", self.js_runtime_combo)
+        self._form_layout.addRow("Caminho do runtime JS:", self.js_runtime_path_edit)
         self._form_layout.addRow(self.download_widevine_check)
         self._form_layout.addRow(self.enable_download_history_check)
         self._form_layout.addRow("Porta do Dashboard (padrão: 6102):", self.dashboard_port_spin)
@@ -562,6 +593,12 @@ class SettingsView(QWidget):
         self.bento4_path_edit.setText(getattr(settings, "bento4_path", "./bento4/bin"))
         self.youtube_cookies_path_edit.setText(getattr(settings, "youtube_cookies_path", ""))
 
+        js_runtime_index = self.js_runtime_combo.findData(getattr(settings, "js_runtime", ""))
+        if js_runtime_index != -1:
+            self.js_runtime_combo.setCurrentIndex(js_runtime_index)
+        self.js_runtime_path_edit.setText(getattr(settings, "js_runtime_path", ""))
+        self._update_js_runtime_path_state()
+
         self.membership_email_edit.setText(settings.membership_email)
         self.membership_password_edit.setText(settings.membership_password)
         
@@ -667,6 +704,8 @@ class SettingsView(QWidget):
             ffmpeg_path=self.ffmpeg_path_edit.text().strip(),
             bento4_path=self.bento4_path_edit.text().strip(),
             youtube_cookies_path=self.youtube_cookies_path_edit.text().strip(),
+            js_runtime=(self.js_runtime_combo.currentData() or ""),
+            js_runtime_path=self.js_runtime_path_edit.text().strip(),
             allowed_attachment_extensions=[
                 line.strip() for line in self.allowed_extensions_edit.toPlainText().splitlines() if line.strip()
             ],
@@ -839,6 +878,13 @@ class SettingsView(QWidget):
             self.proxy_port_spin,
         ):
             widget.setEnabled(bool(enabled))
+
+    def _update_js_runtime_path_state(self) -> None:
+        """Disables the JS runtime path field when no specific runtime is selected."""
+        has_runtime = bool(self.js_runtime_combo.currentData())
+        self.js_runtime_path_edit.setEnabled(has_runtime)
+        if not has_runtime:
+            self.js_runtime_path_edit.clear()
 
     def _update_whisper_fields_state(self, enabled: bool | None = None) -> None:
         """Enables or disables Whisper-related inputs."""

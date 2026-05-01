@@ -49,6 +49,7 @@ class YtdlpDownloader(BaseDownloader):
         }
 
         ydl_opts.update(self.build_quality_opts(self.settings))
+        ydl_opts.update(self.build_js_runtime_opts(self.settings))
 
         if self.settings.user_agent:
             ydl_opts['user_agent'] = self.settings.user_agent
