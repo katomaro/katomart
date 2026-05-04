@@ -101,6 +101,9 @@ config.local.*
 cookies.txt
 *.cookies
 
+# Personal Preferences
+settings.json
+
 # Database
 *.db
 *.sqlite
