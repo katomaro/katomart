@@ -1,0 +1,1467 @@
+import json
+import logging
+import os
+import queue
+import re
+import subprocess
+import threading
+import time
+import shutil
+import html
+import inspect
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+import requests
+from PySide6.QtCore import QObject, QRunnable, Signal
+from urllib.parse import urlparse
+
+from src.platforms.base import BasePlatform
+from src.config.settings_manager import SettingsManager
+from src.downloaders.factory import DownloaderFactory
+from src.utils.resume_manager import ResumeManager
+from src.utils.history_manager import HistoryManager
+from src.app.models import ItemDownloadResult, LessonDownloadReport
+
+from src.utils.filesystem import sanitize_path_component
+from src.utils.filesystem import truncate_component, truncate_filename_preserve_ext, get_executable_path
+from src.utils.ffmpeg_postprocess import run_ffmpeg_post_process
+
+
+class WorkerSignals(QObject):
+    """
+    Defines signals available from a running worker thread.
+    Supported signals are:
+    - finished: No data
+    - error: tuple (exctype, value, traceback.format_exc())
+    - result: object data returned from processing
+    - progress: int indicating % progress
+    """
+    finished = Signal()
+    error = Signal(tuple)
+    result = Signal(str)
+    progress = Signal(int)
+    request_auth_confirmation = Signal(object)
+    download_report = Signal(list)
+    lesson_status = Signal(str)
+    auto_paused = Signal()
+    retry_selection = Signal(str)
+
+
+class FetchCoursesWorker(QRunnable):
+    """
+    Worker to fetch, merge, and process the list of available courses.
+    """
+
+    def __init__(self, platform: BasePlatform, credentials: dict, query: str | None = None):
+        super().__init__()
+        self.platform = platform
+        self.credentials = credentials
+        self.query = query
+        self.signals = WorkerSignals()
+
+    def run(self) -> None:
+        """
+        Authenticates and fetches courses using the provided platform.
+        """
+        try:
+            # Skip authentication if platform already has an active session
+            if self.platform.get_session() is None:
+                logging.info("Worker: Autenticando e obtendo cursos...")
+                self.platform.authenticate(self.credentials)
+            else:
+                logging.info("Worker: Usando sessão existente...")
+
+            if self.query:
+                logging.info(f"Worker: Pesquisando cursos com query: '{self.query}'")
+                courses = self.platform.search_courses(self.query)
+            else:
+                courses = self.platform.fetch_courses()
+
+            logging.info(f"Worker: Obtidos e processados {len(courses)} cursos.")
+            courses_json = json.dumps(courses)
+            self.signals.result.emit(courses_json)
+
+        except requests.exceptions.RequestException as e:
+            logging.error(f"Worker: Network Error - {e!r}")
+            self.signals.error.emit((type(e), e, "A network error occurred."))
+        except Exception as e:
+            logging.error(f"Worker: An unexpected error occurred - {e!r}", exc_info=True)
+            self.signals.error.emit((type(e), e, str(e)))
+        finally:
+            self.signals.finished.emit()
+
+
+class FetchModulesWorker(QRunnable):
+    """
+    Worker to fetch module and lesson details for selected courses.
+    """
+
+    def __init__(self, platform: BasePlatform, courses: List[Dict[str, Any]]):
+        super().__init__()
+        self.platform = platform
+        self.courses = courses
+        self.signals = WorkerSignals()
+
+    def run(self) -> None:
+        """
+        Fetches course content using the provided platform.
+        """
+        try:
+            logging.info(f"Worker: Fetching content for {len(self.courses)} courses...")
+            content = self.platform.fetch_course_content(self.courses)
+            content_json = json.dumps(content)
+            self.signals.result.emit(content_json)
+        except Exception as e:
+            logging.error(f"Worker: An unexpected error occurred - {e!r}", exc_info=True)
+            self.signals.error.emit((type(e), e, str(e)))
+        finally:
+            self.signals.finished.emit()
+
+
+class TranscriptionQueue:
+    """Background thread that processes transcription jobs sequentially.
+
+    The download thread pushes media paths into the queue via ``enqueue()``.
+    A dedicated daemon thread consumes them one at a time, sharing a single
+    loaded Whisper model instance.
+    """
+
+    _SENTINEL = None  # poison pill to signal shutdown
+
+    def __init__(self, settings, signals: WorkerSignals):
+        self._settings = settings
+        self._signals = signals
+        self._queue: queue.Queue = queue.Queue()
+        self._whisper_model = None
+        self._cancelled = False
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def enqueue(self, media_path: Path) -> None:
+        """Add a video path to the transcription queue."""
+        self._queue.put(media_path)
+
+    def cancel(self) -> None:
+        """Signal the transcription thread to stop after the current item."""
+        self._cancelled = True
+        self._queue.put(self._SENTINEL)
+
+    def finish_and_wait(self, timeout: float | None = None) -> None:
+        """Signal no more items and wait for the queue to drain."""
+        self._queue.put(self._SENTINEL)
+        self._thread.join(timeout=timeout)
+
+    def _load_whisper_model(self):
+        if self._whisper_model is None:
+            import whisper
+
+            self._whisper_model = whisper.load_model(self._settings.whisper_model)
+        return self._whisper_model
+
+    def _run(self) -> None:
+        """Main loop: process items from the queue until sentinel or cancelled."""
+        while not self._cancelled:
+            try:
+                item = self._queue.get(timeout=1.0)
+            except queue.Empty:
+                continue
+
+            if item is self._SENTINEL:
+                break
+
+            media_path: Path = item
+            try:
+                self._transcribe_single(media_path)
+            except Exception as exc:
+                logging.error(
+                    "Erro na transcrição paralela de %s: %s",
+                    media_path,
+                    exc,
+                    exc_info=True,
+                )
+                self._signals.result.emit(
+                    f"      - [ERROR] Falha na transcrição paralela: {media_path.name}"
+                )
+            finally:
+                self._queue.task_done()
+
+        # Drain remaining items without processing (on cancel)
+        while not self._queue.empty():
+            try:
+                self._queue.get_nowait()
+                self._queue.task_done()
+            except queue.Empty:
+                break
+
+    def _transcribe_single(self, media_path: Path) -> None:
+        """Extract audio and transcribe a single video file."""
+        from whisper.utils import get_writer
+
+        self._signals.result.emit(
+            f"      - [WHISPER] Iniciando transcrição paralela: {media_path.name}"
+        )
+
+        ffmpeg_exe = get_executable_path(
+            "ffmpeg", getattr(self._settings, "ffmpeg_path", None)
+        )
+        if not ffmpeg_exe:
+            raise FileNotFoundError("ffmpeg executable not found.")
+
+        audio_path = media_path.with_suffix(".wav")
+        cmd = [
+            ffmpeg_exe,
+            "-y",
+            "-i",
+            str(media_path),
+            "-vn",
+            "-acodec",
+            "pcm_s16le",
+            "-ar",
+            "16000",
+            str(audio_path),
+        ]
+        subprocess.run(
+            cmd,
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.STDOUT,
+            **({"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}),
+        )
+
+        model = self._load_whisper_model()
+        language = (
+            None
+            if self._settings.whisper_language == "auto"
+            else self._settings.whisper_language
+        )
+        if language and len(language) > 2 and "-" in language:
+            language = language.split("-")[0].lower()
+
+        result = model.transcribe(str(audio_path), language=language)
+        output_format = self._settings.whisper_output_format or "srt"
+        writer = get_writer(output_format, str(audio_path.parent))
+        writer_opts = {"language": language} if language else {}
+        writer(result, audio_path.stem, writer_opts)
+
+        generated = audio_path.parent / f"{audio_path.stem}.{output_format}"
+        if generated.exists():
+            self._signals.result.emit(
+                f"      - [WHISPER] Transcrição paralela gerada: {generated.name}"
+            )
+        else:
+            self._signals.result.emit(
+                "      - [WARNING] Whisper não gerou arquivo de transcrição (paralelo)."
+            )
+
+
+class DownloadWorker(QRunnable):
+    """
+    Worker to download files for the selected modules and lessons.
+    """
+
+    def __init__(
+        self,
+        platform: BasePlatform,
+        selection: Dict[str, Any],
+        download_dir: str,
+        settings_manager: SettingsManager,
+        platform_name: str,
+        selected_courses: list | None = None,
+        resume_state: Dict[str, Any] | None = None,
+    ):
+        super().__init__()
+        self.platform = platform
+        self.selection = resume_state.get("selection", selection) if resume_state else selection
+        self.signals = WorkerSignals()
+        self.download_dir = Path(download_dir)
+        self.settings_manager = settings_manager
+        self.settings = self.settings_manager.get_settings()
+        self._retry_attempts = max(0, getattr(self.settings, "download_retry_attempts", 0))
+        self._retry_delay_seconds = max(0, getattr(self.settings, "download_retry_delay_seconds", 0))
+        self._whisper_model = None
+        self._transcription_queue: TranscriptionQueue | None = None
+        self.platform_name = platform_name
+        self.selected_courses = selected_courses or []
+        self.resume_manager: ResumeManager | None = None
+        self.resume_state: Dict[str, Any] | None = None
+
+        self._download_report: List[LessonDownloadReport] = []
+        self._pause_event = threading.Event()
+        self._pause_event.set()
+        self._cancelled = False
+        self._save_requested = False
+        self._partial_count = 0
+        self._error_count = 0
+        self._retry_lessons: set = set()
+        self._history_manager: HistoryManager | None = None
+        self._history_session_id: int | None = None
+
+        if getattr(self.settings, "enable_download_history", False):
+            try:
+                db_path = self.download_dir / "katomart_history.db"
+                self._history_manager = HistoryManager(db_path)
+            except Exception as exc:
+                logging.error("Falha ao inicializar histórico de downloads: %s", exc)
+                self._history_manager = None
+
+        if getattr(self.settings, "create_resume_summary", False):
+            self.resume_manager = ResumeManager(self.download_dir)
+            self.resume_state = resume_state
+            if self.resume_manager and self.resume_state:
+                self.resume_state.setdefault("selection", self.selection)
+                self.resume_state.setdefault("selected_courses", self.selected_courses)
+                self.resume_manager.save_state(self.platform_name, self.resume_state)
+
+    def _run_with_retries(self, func, description: str, treat_false_as_failure: bool = True):
+        """Execute ``func`` with the configured retry policy.
+
+        Args:
+            func: Callable to execute.
+            description: Human friendly label for logging.
+            treat_false_as_failure: When True, a ``False`` return value triggers
+                a retry.
+
+        Returns:
+            The function result when successful.
+
+        Raises:
+            Exception: Propagates the last error after exhausting retries.
+        """
+
+        total_attempts = self._retry_attempts + 1
+        for attempt in range(total_attempts):
+            try:
+                result = func()
+                if treat_false_as_failure and result is False:
+                    raise RuntimeError(f"{description} retornou status de falha.")
+                return result
+            except requests.exceptions.HTTPError as e:
+                is_last_attempt = attempt >= self._retry_attempts
+
+                if is_last_attempt:
+                    status_code = e.response.status_code if e.response is not None else None
+                    if getattr(self.settings, "auto_reauth_on_error", False) and status_code in (400, 401):
+                        logging.warning(
+                            f"{description}: Erro {status_code} apos esgotar tentativas. "
+                            "Tentando re-autenticacao automatica..."
+                        )
+                        try:
+                            creds = getattr(self.platform, 'credentials', {})
+                            confirmation_event = creds.get("manual_auth_confirmation") if creds else None
+                            if confirmation_event:
+                                confirmation_event.clear()
+                                self.signals.request_auth_confirmation.emit(confirmation_event)
+
+                            self.platform.refresh_auth()
+                            logging.info("Re-autenticacao bem sucedida. Tentando operacao uma ultima vez...")
+                            result = func()
+                            if treat_false_as_failure and result is False:
+                                raise RuntimeError(f"{description} retornou status de falha apos re-autenticacao.")
+                            logging.info(f"Operacao '{description}' recuperada com sucesso apos re-autenticacao.")
+                            return result
+                        except Exception as auth_exc:
+                            logging.error(f"Falha na re-autenticacao ou na tentativa final: {auth_exc}")
+
+                    logging.error(
+                        f"{description} falhou após {self._retry_attempts} retentativas: {e}",
+                        exc_info=True,
+                    )
+                    raise
+
+                next_attempt = attempt + 2
+                logging.warning(
+                    f"{description} falhou (tentativa {next_attempt} de {total_attempts}). "
+                    f"Nova tentativa em {self._retry_delay_seconds}s. Erro: {e}"
+                )
+                time.sleep(self._retry_delay_seconds)
+
+            except Exception as exc:  # pragma: no cover - operational retry logic
+                is_last_attempt = attempt >= self._retry_attempts
+                if is_last_attempt:
+                    logging.error(
+                        f"{description} falhou após {self._retry_attempts} retentativas: {exc}",
+                        exc_info=True,
+                    )
+                    raise
+
+                next_attempt = attempt + 2
+                logging.warning(
+                    f"{description} falhou (tentativa {next_attempt} de {total_attempts}). "
+                    f"Nova tentativa em {self._retry_delay_seconds}s. Erro: {exc}"
+                )
+                time.sleep(self._retry_delay_seconds)
+
+    def _build_request_context(self, session: requests.Session) -> Dict[str, Any]:
+        return {
+            "headers": dict(session.headers),
+            "cookies": session.cookies.get_dict(),
+        }
+
+    def _persist_resume_state(self) -> None:
+        if self.resume_manager and self.resume_state:
+            self.resume_manager.save_state(self.platform_name, self.resume_state)
+
+    def pause(self) -> None:
+        self._pause_event.clear()
+
+    def resume(self) -> None:
+        self._pause_event.set()
+
+    def cancel(self) -> None:
+        self._cancelled = True
+        self._pause_event.set()
+        if self._transcription_queue is not None:
+            self._transcription_queue.cancel()
+
+    def request_save_progress(self) -> None:
+        self._save_requested = True
+
+    def _force_save_progress(self) -> None:
+        """Save progress to disk, creating resume infrastructure if needed."""
+        if not self.resume_manager:
+            self.resume_manager = ResumeManager(self.download_dir)
+        if not self.resume_state:
+            session = self.platform.get_session()
+            request_context = self._build_request_context(session) if session else {}
+            self.resume_state = self.resume_manager.initialize_state(
+                self.platform_name, self.selection, self.selected_courses, request_context
+            )
+        self._persist_resume_state()
+
+    def _build_retry_selection(self) -> Dict[str, Any] | None:
+        """Build a selection containing only failed/partial lessons."""
+        if not self._retry_lessons:
+            return None
+        retry = json.loads(json.dumps(self.selection))
+        for course_id, course_data in retry.items():
+            for mod_idx, module in enumerate(course_data.get("modules", [])):
+                for les_idx, lesson in enumerate(module.get("lessons", [])):
+                    if (str(course_id), mod_idx, les_idx) not in self._retry_lessons:
+                        lesson["download"] = False
+        return retry
+
+    def _wait_if_paused(self) -> None:
+        """Block until unpaused, checking for save/cancel while waiting."""
+        while not self._cancelled:
+            if self._save_requested:
+                self._save_requested = False
+                self._force_save_progress()
+                self.signals.result.emit("Progresso salvo com sucesso.")
+            if self._pause_event.wait(timeout=0.5):
+                return
+
+    def _ensure_resume_state(self, session: requests.Session) -> None:
+        if not self.resume_manager:
+            return
+
+        request_context = self._build_request_context(session)
+
+        if not self.resume_state:
+            self.resume_state = self.resume_manager.initialize_state(
+                self.platform_name, self.selection, self.selected_courses, request_context
+            )
+        else:
+            self.resume_state.setdefault("selection", self.selection)
+            self.resume_state.setdefault("selected_courses", self.selected_courses)
+            self.resume_state.setdefault("progress", {})
+            self.resume_state.setdefault("completed", False)
+            self.resume_state["request"] = request_context
+            self._persist_resume_state()
+
+    def _prepare_lesson_resume(
+        self,
+        course_id: str,
+        module_key: str,
+        lesson_key: str,
+        lesson_details,
+    ) -> Dict[str, Any] | None:
+        if not self.resume_manager or not self.resume_state:
+            return None
+
+        return self.resume_manager.ensure_lesson_entry(
+            self.resume_state,
+            self.platform_name,
+            course_id,
+            module_key,
+            lesson_key,
+            lesson_details,
+        )
+
+    def _mark_resume_status(
+        self,
+        course_id: str,
+        module_key: str,
+        lesson_key: str,
+        category: str,
+        item_key: str | None,
+        success: bool,
+    ) -> None:
+        if not self.resume_manager or not self.resume_state:
+            return
+
+        self.resume_manager.mark_status(
+            self.resume_state,
+            self.platform_name,
+            course_id,
+            module_key,
+            lesson_key,
+            category,
+            item_key,
+            success,
+        )
+
+    def _should_skip_download(
+        self,
+        lesson_entry: Dict[str, Any] | None,
+        category: str,
+        item_key: str | None = None,
+    ) -> bool:
+        if not lesson_entry:
+            return False
+
+        if category in {"description", "auxiliary_urls"}:
+            return bool(lesson_entry.get(category))
+
+        category_map = lesson_entry.get(category, {})
+        if item_key is None:
+            return False
+
+        return bool(category_map.get(item_key))
+
+    @staticmethod
+    def _is_lesson_complete(lesson_entry: Dict[str, Any] | None) -> bool:
+        if not lesson_entry:
+            return False
+
+        return all(
+            [
+                lesson_entry.get("description", True),
+                lesson_entry.get("auxiliary_urls", True),
+                all(lesson_entry.get("videos", {}).values()),
+                all(lesson_entry.get("attachments", {}).values()),
+            ]
+        )
+
+    def _skip_if_file_exists(self, path: Path, content_type: str) -> bool:
+        """Check if a file already exists on disk when skip_existing_files is enabled.
+
+        For videos, uses stem-matching via _find_downloaded_media since
+        downloaders like yt-dlp may append extensions automatically.
+        """
+        if not getattr(self.settings, "skip_existing_files", False):
+            return False
+        if content_type == "video":
+            return self._find_downloaded_media(path) is not None
+        return path.exists()
+
+    def _find_downloaded_media(self, expected_path: Path) -> Optional[Path]:
+        """Resolve the actual path of a downloaded media file.
+
+        Some downloaders (like yt-dlp) may append extensions automatically. This
+        helper first checks the exact expected path and then looks for files
+        sharing the same stem within the same directory.
+        """
+
+        if expected_path.exists():
+            return expected_path
+
+        candidates = sorted(
+            expected_path.parent.glob(expected_path.name + ".*"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+
+        if not candidates:
+            prefix_match = re.match(r"^(\d+\.\s*)", expected_path.stem)
+            if prefix_match:
+                numbered_prefix = prefix_match.group(1)
+                candidates = sorted(
+                    expected_path.parent.glob(f"{numbered_prefix}*.*"),
+                    key=lambda p: p.stat().st_mtime,
+                    reverse=True,
+                )
+
+        return candidates[0] if candidates else None
+
+    def _extract_audio_from_video(self, media_path: Path) -> Path:
+        """Use ffmpeg to extract audio from a media file and return the audio path."""
+
+        ffmpeg_exe = get_executable_path("ffmpeg", getattr(self.settings, "ffmpeg_path", None))
+        if not ffmpeg_exe:
+            raise FileNotFoundError("ffmpeg executable not found.")
+
+        audio_path = media_path.with_suffix(".wav")
+        cmd = [
+            ffmpeg_exe,
+            "-y",
+            "-i",
+            str(media_path),
+            "-vn",
+            "-acodec",
+            "pcm_s16le",
+            "-ar",
+            "16000",
+            str(audio_path),
+        ]
+
+        logging.info(f"Extraindo áudio com ffmpeg: {' '.join(cmd)}")
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT,
+                       **({"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}))
+        return audio_path
+
+    def _get_video_duration(self, video_path: Path) -> float:
+        """Uses ffmpeg to get video duration in seconds."""
+        ffmpeg_path = getattr(self.settings, "ffmpeg_path", None)
+        ffmpeg_exe = get_executable_path("ffmpeg", ffmpeg_path)
+
+        if not ffmpeg_exe:
+            logging.warning("??? ffmpeg not found for duration check.")
+            return 0.0
+        cmd = [ffmpeg_exe, "-i", str(video_path)]
+        try:
+            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace',
+                                   **({"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}))
+            # Search for "Duration: 00:00:00.00"
+            match = re.search(r"Duration:\s*(\d+):(\d+):(\d+\.\d+)", result.stderr)
+            if match:
+                hours, minutes, seconds = map(float, match.groups())
+                return hours * 3600 + minutes * 60 + seconds
+        except Exception as e:
+            logging.error(f"Failed to get video duration: {e}")
+
+        return 0.0
+
+    def _load_whisper_model(self):
+        if self._whisper_model is None:
+            import whisper
+
+            self._whisper_model = whisper.load_model(self.settings.whisper_model)
+        return self._whisper_model
+
+    def _transcribe_audio(self, audio_path: Path) -> Optional[Path]:
+        """Generate a transcription for the provided audio file using Whisper."""
+
+        from whisper.utils import get_writer
+
+        model = self._load_whisper_model()
+        language = None if self.settings.whisper_language == "auto" else self.settings.whisper_language
+
+        if language and len(language) > 2 and "-" in language:
+            language = language.split("-")[0].lower()
+
+        result = model.transcribe(str(audio_path), language=language)
+
+        output_format = self.settings.whisper_output_format or "srt"
+        writer = get_writer(output_format, str(audio_path.parent))
+        writer_opts = {"language": language} if language else {}
+        writer(result, audio_path.stem, writer_opts)
+
+        generated = audio_path.parent / f"{audio_path.stem}.{output_format}"
+        return generated if generated.exists() else None
+
+    @staticmethod
+    def _classify_error(exc: Exception) -> tuple:
+        """Return (error_type, error_message) from an exception."""
+        msg = str(exc)[:200]
+        if isinstance(exc, requests.exceptions.HTTPError):
+            status_code = exc.response.status_code if exc.response is not None else "?"
+            return f"HTTP {status_code}", msg
+        if isinstance(exc, requests.exceptions.ConnectionError):
+            return "Erro de conexao", msg
+        if isinstance(exc, requests.exceptions.Timeout):
+            return "Timeout", msg
+        if isinstance(exc, subprocess.CalledProcessError):
+            return "Processo externo falhou", msg
+        if isinstance(exc, FileNotFoundError):
+            return "Arquivo nao encontrado", msg
+        if isinstance(exc, RuntimeError):
+            return "Erro de execucao", msg
+        return type(exc).__name__, msg
+
+    def _finish_history_session(self, status: str) -> None:
+        if self._history_manager and self._history_session_id is not None:
+            try:
+                self._history_manager.finish_session(self._history_session_id, status)
+            except Exception as exc:
+                logging.error("Falha ao finalizar sessão de histórico: %s", exc)
+
+    def _emit_download_report(self) -> None:
+        """Emit a formatted download report summary via result signal."""
+        report = self._download_report
+        if not report:
+            return
+
+        total = len(report)
+        success = sum(1 for r in report if r.status == "success")
+        partial = sum(1 for r in report if r.status == "partial")
+        error = sum(1 for r in report if r.status == "error")
+        skipped = sum(1 for r in report if r.status == "skipped")
+
+        lines = [
+            "",
+            "=" * 50,
+            "         RELATORIO DE DOWNLOAD",
+            "=" * 50,
+            f"Total de aulas: {total}",
+            f"  [OK]      Sucesso:  {success}",
+            f"  [PARCIAL] Parcial:  {partial}",
+            f"  [ERRO]    Erro:     {error}",
+            f"  [PULADO]  Puladas:  {skipped}",
+        ]
+
+        problem_lessons = [r for r in report if r.status in ("error", "partial")]
+        if problem_lessons:
+            lines.append("")
+            lines.append("Detalhes de aulas com problemas:")
+            lines.append("-" * 50)
+            for lr in problem_lessons:
+                lines.append(f"  [{lr.status.upper()}] {lr.course} > {lr.module} > {lr.lesson}")
+                if lr.error_message:
+                    lines.append(f"    Erro geral: {lr.error_message}")
+                for v in lr.videos:
+                    if v.status == "error":
+                        lines.append(f"    [ERRO] Video \"{v.name}\" - {v.error_type}: {v.error_message}")
+                for a in lr.attachments:
+                    if a.status == "error":
+                        lines.append(f"    [ERRO] Anexo \"{a.name}\" - {a.error_type}: {a.error_message}")
+
+        lines.append("=" * 50)
+        self.signals.result.emit("\n".join(lines))
+        self.signals.download_report.emit(report)
+
+    def _maybe_run_ffmpeg_post_process(self, expected_media_path: Path) -> None:
+        """Run user-configured ffmpeg pass on the downloaded media if enabled."""
+
+        if not getattr(self.settings, "run_ffmpeg", False):
+            return
+
+        args_str = (getattr(self.settings, "ffmpeg_args", "") or "").strip()
+        if not args_str:
+            return
+
+        media_path = self._find_downloaded_media(expected_media_path)
+        if not media_path:
+            logging.warning(
+                f"Pós-processamento ffmpeg ignorado, arquivo não localizado: {expected_media_path}"
+            )
+            return
+
+        try:
+            run_ffmpeg_post_process(
+                media_path,
+                getattr(self.settings, "ffmpeg_path", None),
+                args_str,
+            )
+            self.signals.result.emit(
+                f"      - Pós-processamento ffmpeg aplicado: {media_path.name}"
+            )
+        except FileNotFoundError:
+            logging.error("ffmpeg não encontrado para o pós-processamento.")
+            self.signals.result.emit(
+                "      - [ERROR] ffmpeg não encontrado para o pós-processamento."
+            )
+        except ValueError as exc:
+            logging.error(f"Argumentos ffmpeg inválidos: {exc}")
+            self.signals.result.emit(
+                f"      - [ERROR] Argumentos ffmpeg inválidos: {exc}"
+            )
+        except subprocess.CalledProcessError:
+            self.signals.result.emit(
+                "      - [ERROR] ffmpeg falhou no pós-processamento (ver log)."
+            )
+        except Exception as exc:
+            logging.error(
+                f"Erro inesperado no pós-processamento ffmpeg: {exc}", exc_info=True
+            )
+            self.signals.result.emit(
+                "      - [ERROR] Falha inesperada no pós-processamento ffmpeg."
+            )
+
+    def _maybe_transcribe_video(self, expected_media_path: Path) -> None:
+        """Extract audio and transcribe a video when Whisper is enabled."""
+
+        if not self.settings.use_whisper_transcription:
+            return
+
+        media_path = self._find_downloaded_media(expected_media_path)
+        if not media_path:
+            logging.warning(
+                f"Não foi possível localizar o arquivo de mídia para transcrição: {expected_media_path}"
+            )
+            return
+
+        # Parallel mode: enqueue and return immediately
+        if self._transcription_queue is not None:
+            self._transcription_queue.enqueue(media_path)
+            self.signals.result.emit(
+                f"      - Vídeo enfileirado para transcrição paralela: {media_path.name}"
+            )
+            return
+
+        # Synchronous mode (original behavior)
+        try:
+            audio_path = self._extract_audio_from_video(media_path)
+            transcription_path = self._transcribe_audio(audio_path)
+
+            if transcription_path:
+                self.signals.result.emit(
+                    f"      - Transcrição gerada com Whisper: {transcription_path.name}"
+                )
+            else:
+                self.signals.result.emit(
+                    "      - [WARNING] Whisper não gerou arquivo de transcrição."
+                )
+        except FileNotFoundError:
+            logging.error("ffmpeg não encontrado. Certifique-se de que está instalado e no PATH.")
+            self.signals.result.emit(
+                "      - [ERROR] ffmpeg não encontrado para transcrição com Whisper."
+            )
+        except subprocess.CalledProcessError as exc:
+            logging.error(f"Falha ao extrair áudio para Whisper: {exc}")
+            self.signals.result.emit(
+                "      - [ERROR] Falha ao extrair áudio para transcrição com Whisper."
+            )
+        except Exception as exc:
+            logging.error(
+                f"Erro inesperado durante transcrição com Whisper: {exc}",
+                exc_info=True,
+            )
+            self.signals.result.emit(
+                "      - [ERROR] Falha inesperada durante a transcrição com Whisper."
+            )
+
+    def run(self) -> None:
+        """
+        Iterates through the selection, fetches lesson details, and prepares for download.
+        """
+        try:
+            logging.info("Download iniciado.")
+            session = self.platform.get_session()
+            if not session:
+                raise ConnectionError("Download worker requires an authenticated session.")
+
+            self._ensure_resume_state(session)
+
+            if (
+                self.settings.use_whisper_transcription
+                and getattr(self.settings, "whisper_parallel_transcription", False)
+            ):
+                self._transcription_queue = TranscriptionQueue(self.settings, self.signals)
+
+            if self._history_manager:
+                try:
+                    self._history_session_id = self._history_manager.start_session(self.platform_name)
+                except Exception as exc:
+                    logging.error("Falha ao iniciar sessão de histórico: %s", exc)
+
+            # Count only selected lessons (where download is not False)
+            total_lessons = sum(
+                1
+                for course in self.selection.values()
+                for module in course.get("modules", [])
+                if module.get("download") is not False
+                for lesson in module.get("lessons", [])
+                if lesson.get("download") is not False
+            )
+            lessons_processed = 0
+
+            for course_id, course_data in self.selection.items():
+                if self._cancelled:
+                    break
+                course_id_str = str(course_id)
+                course_slug = course_data.get("slug")
+                course_title = course_data.get("name", f"Curso-{course_id}")
+                course_title = sanitize_path_component(course_title)
+                course_title = truncate_component(course_title, getattr(self.settings, 'max_course_name_length', 40))
+                course_path = self.download_dir / course_title
+                course_path.mkdir(parents=True, exist_ok=True)
+                self.signals.result.emit(f"Processando curso {course_title}")
+
+                for module_index, module in enumerate(course_data.get("modules", []), start=1):
+                    if self._cancelled:
+                        break
+                    if module.get("download") is False:
+                        self.signals.result.emit(f"  -> Pulando módulo não selecionado para download ou bloqueado: {module.get('title', 'Unknown Module')}")
+                        if self._history_manager and self._history_session_id is not None:
+                            for _lesson in module.get("lessons", []):
+                                try:
+                                    self._history_manager.record_lesson(
+                                        self._history_session_id, course_id_str,
+                                        course_data.get("name", f"Curso-{course_id}"),
+                                        module.get("title", "Módulo sem titulo"),
+                                        _lesson.get("title", "Aula sem titulo"),
+                                        LessonDownloadReport(
+                                            course=course_data.get("name", f"Curso-{course_id}"),
+                                            module=module.get("title", "Módulo sem titulo"),
+                                            lesson=_lesson.get("title", "Aula sem titulo"),
+                                            status="not_selected",
+                                        ),
+                                    )
+                                except Exception as exc:
+                                    logging.error("Falha ao registrar aula no histórico: %s", exc)
+                        continue
+                    module_title = module.get("title", "Módulo sem titulo")
+                    module_title = sanitize_path_component(module_title)
+                    module_title = truncate_component(module_title, getattr(self.settings, 'max_module_name_length', 60))
+                    module_order = module.get("order", module_index)
+                    module_id = module.get("id")
+                    module_key = (
+                        ResumeManager._module_key(module, module_index)
+                        if self.resume_manager
+                        else str(module_id or module_order)
+                    )
+                    module_title_full = f"{module_order}. {module_title}"
+                    module_path = course_path / module_title_full
+                    module_path.mkdir(parents=True, exist_ok=True)
+                    self.signals.result.emit(f"  -> Modulo: {module_title}")
+
+                    for lesson_index, lesson in enumerate(module.get("lessons", []), start=1):
+                        if lesson.get("download") is False:
+                            self.signals.result.emit(f"    - Pulando aula não selecionada para download ou bloqueada: {lesson.get('title', 'Unknown Lesson')}")
+                            if self._history_manager and self._history_session_id is not None:
+                                try:
+                                    self._history_manager.record_lesson(
+                                        self._history_session_id, course_id_str,
+                                        course_data.get("name", f"Curso-{course_id}"),
+                                        module.get("title", "Módulo sem titulo"),
+                                        lesson.get("title", "Aula sem titulo"),
+                                        LessonDownloadReport(
+                                            course=course_data.get("name", f"Curso-{course_id}"),
+                                            module=module.get("title", "Módulo sem titulo"),
+                                            lesson=lesson.get("title", "Aula sem titulo"),
+                                            status="not_selected",
+                                        ),
+                                    )
+                                except Exception as exc:
+                                    logging.error("Falha ao registrar aula no histórico: %s", exc)
+                            continue
+
+                        self._wait_if_paused()
+                        if self._cancelled:
+                            break
+
+                        lesson_key = (
+                            ResumeManager._lesson_key(lesson, lesson_index)
+                            if self.resume_manager
+                            else str(lesson.get("id") or lesson.get("order") or lesson_index)
+                        )
+
+                        if self.resume_state and self.resume_manager:
+                            existing_entry = (
+                                self.resume_state.get("progress", {})
+                                .get(course_id_str, {})
+                                .get("modules", {})
+                                .get(module_key, {})
+                                .get("lessons", {})
+                                .get(lesson_key)
+                            )
+                            if self._is_lesson_complete(existing_entry):
+                                self.signals.result.emit(
+                                    f"    - Aula '{lesson.get('title', 'Unknown Lesson')}' já concluída anteriormente. Pulando downloads."
+                                )
+                                _skipped_report = LessonDownloadReport(
+                                    course=course_title,
+                                    module=module_title,
+                                    lesson=lesson.get("title", "Unknown Lesson"),
+                                    status="skipped",
+                                )
+                                self._download_report.append(_skipped_report)
+                                if self._history_manager and self._history_session_id is not None:
+                                    try:
+                                        self._history_manager.record_lesson(
+                                            self._history_session_id, course_id_str,
+                                            course_data.get("name", f"Curso-{course_id}"),
+                                            module.get("title", "Módulo sem titulo"),
+                                            lesson.get("title", "Unknown Lesson"),
+                                            _skipped_report,
+                                        )
+                                    except Exception as exc:
+                                        logging.error("Falha ao registrar aula no histórico: %s", exc)
+                                self.signals.lesson_status.emit("skipped")
+                                lessons_processed += 1
+                                progress = int((lessons_processed / total_lessons) * 100) if total_lessons > 0 else 0
+                                self.signals.progress.emit(progress)
+                                continue
+
+                        lesson_started_at = datetime.now(timezone.utc).isoformat()
+                        lesson_title = lesson.get("title", "Aula sem titulo")
+                        lesson_title = sanitize_path_component(lesson_title)
+                        lesson_title = truncate_component(lesson_title, getattr(self.settings, 'max_lesson_name_length', 60))
+                        lesson_order = lesson.get("order", lesson_index)
+                        lesson_title_full = f"{lesson_order}. {lesson_title}"
+                        lesson_path = module_path / lesson_title_full
+                        lesson_path.mkdir(parents=True, exist_ok=True)
+                        last_downloaded_video_path: Optional[Path] = None
+                        lesson_report = LessonDownloadReport(
+                            course=course_title,
+                            module=module_title,
+                            lesson=lesson_title,
+                        )
+                        try:
+                            self.signals.result.emit(f"    - Obtendo detalhes para a aula: {lesson_title}")
+                            lesson_details = self._run_with_retries(
+                                lambda: self.platform.fetch_lesson_details(
+                                    lesson, course_slug, course_id, module_id
+                                ),
+                                description=f"Obter dados da aula '{lesson_title}'",
+                                treat_false_as_failure=False,
+                            )
+
+                            lesson_entry = self._prepare_lesson_resume(
+                                course_id_str, module_key, lesson_key, lesson_details
+                            )
+
+                            logging.info(f"Aula '{lesson_title}' conteúdo: "
+                                            f"{len(lesson_details.videos)} vídeo(s), "
+                                            f"{len(lesson_details.attachments)} anexo(s).")
+
+                            if lesson_details.description:
+                                if getattr(self.settings, "skip_description_download", False):
+                                    self.signals.result.emit("      - [CONFIG] Pulando descrição (configuração ativa).")
+                                    self._mark_resume_status(
+                                        course_id_str, module_key, lesson_key, "description", None, True
+                                    )
+                                elif self._should_skip_download(lesson_entry, "description"):
+                                    self.signals.result.emit(
+                                        "      - Descrição já registrada no resumo. Pulando download."
+                                    )
+                                else:
+                                    description_path: Path
+                                    if lesson_details.description.description_type in ("text", "markdown"):
+                                        description_path = lesson_path / "Descrição.txt"
+                                    else:
+                                        description_path = lesson_path / "Descrição.html"
+                                    if self._skip_if_file_exists(description_path, "description"):
+                                        self.signals.result.emit(
+                                            "      - [DISCO] Descrição já existe no disco. Pulando."
+                                        )
+                                        self._mark_resume_status(
+                                            course_id_str, module_key, lesson_key, "description", None, True
+                                        )
+                                    else:
+                                        try:
+                                            with open(description_path, 'w', encoding='utf-8') as desc_file:
+                                                desc_file.write(lesson_details.description.text)
+                                            self._mark_resume_status(
+                                                course_id_str, module_key, lesson_key, "description", None, True
+                                            )
+                                        except Exception as exc:
+                                            logging.error("Falha ao salvar descrição: %s", exc, exc_info=True)
+                                            self._mark_resume_status(
+                                                course_id_str, module_key, lesson_key, "description", None, False
+                                            )
+                                            raise
+
+                                        if self.settings.download_embedded_videos:
+                                            desc_html = lesson_details.description.text or ""
+                                            found_urls = []
+                                            found_urls.extend(re.findall(r'<iframe[^>]+src=["\']([^"\']+)["\']', desc_html, flags=re.I))
+                                            found_urls.extend(re.findall(r'<video[^>]+src=["\']([^"\']+)["\']', desc_html, flags=re.I))
+                                            found_urls.extend(re.findall(r'<source[^>]+src=["\']([^"\']+)["\']', desc_html, flags=re.I))
+                                            found_urls.extend(re.findall(r'href=["\'](https?://[^"\']+)["\']', desc_html, flags=re.I))
+                                            found_urls.extend(re.findall(r'https?://[^\s"\'<>]+', desc_html, flags=re.I))
+
+                                            normalized = []
+                                            for u in found_urls:
+                                                if not u:
+                                                    continue
+                                                u = html.unescape(u)
+                                                if u.startswith('//'):
+                                                    u = 'https:' + u
+                                                if u.startswith('javascript:') or u.startswith('mailto:') or u.startswith('#'):
+                                                    continue
+                                                if u not in normalized:
+                                                    normalized.append(u)
+
+                                            if normalized:
+                                                for emb_idx, emb_url in enumerate(normalized, start=1):
+                                                    emb_name = f"{emb_idx}. e_Aula"
+                                                    emb_name = truncate_filename_preserve_ext(emb_name, getattr(self.settings, 'max_file_name_length', 30))
+                                                    emb_path = lesson_path / emb_name
+                                                    logging.info(f"Baixando Conteudo linkado '{emb_url}' para '{emb_path}'")
+                                                    try:
+                                                        parsed_emb = urlparse(emb_url)
+                                                        emb_domain = (parsed_emb.netloc or "").lower()
+                                                        if emb_domain.startswith("www."):
+                                                            emb_domain = emb_domain[4:]
+                                                    except Exception:
+                                                        emb_domain = ""
+
+                                                    blacklist: List[str] = getattr(self.settings, "embed_domain_blacklist", []) or []
+                                                    is_blacklisted = any(
+                                                        emb_domain == b or emb_domain.endswith("." + b)
+                                                        for b in blacklist
+                                                    )
+                                                    if is_blacklisted:
+                                                        self.signals.result.emit(
+                                                            f"    - [PULADO] URL embed blacklist: {emb_url}"
+                                                        )
+                                                        continue
+
+                                                    downloader = DownloaderFactory.get_downloader(emb_url, self.settings_manager)
+                                                    try:
+                                                        extra_props = {}
+                                                        if self.platform_name.lower() == "hotmart" and course_slug:
+                                                            extra_props["referer"] = f"https://{course_slug}.club.hotmart.com/"
+
+                                                        self._run_with_retries(
+                                                            lambda: downloader.download_video(
+                                                                emb_url, self.platform.get_session(), emb_path, extra_props=extra_props
+                                                            ),
+                                                            description=f"Download do Conteudo linkado '{emb_name}'",
+                                                        )
+                                                        self.signals.result.emit(f"    - Conteudo linkado baixado: {emb_path.resolve()}")
+                                                        self._maybe_run_ffmpeg_post_process(emb_path)
+                                                        self._maybe_transcribe_video(emb_path)
+                                                    except Exception as e:
+                                                        logging.error(
+                                                            f"Erro ao baixar Conteudo linkado {emb_url}: {e}",
+                                                            exc_info=True,
+                                                        )
+                                                        self.signals.result.emit(
+                                                            f"    - [ERROR] Falha ao baixar link encontrado (pode ser propaganda, etc): {emb_url}"
+                                                        )
+                                        self.signals.result.emit(f"      - Descrição salva em {description_path.resolve()}")
+
+                            if getattr(self.settings, "skip_video_download", False):
+                                self.signals.result.emit("    - [CONFIG] Pulando download de vídeos principais (configuração ativa).")
+                            else:
+                                for video_index, video in enumerate(lesson_details.videos, start=1):
+                                    video_order = video.order or video_index
+                                    video_name = f"{video_order}. Aula"
+                                    video_name = truncate_filename_preserve_ext(video_name, getattr(self.settings, 'max_file_name_length', 30))
+                                    video_path = lesson_path / video_name
+                                    logging.info(f"Baixando Vídeo '{video_name}' para '{video_path}'")
+                                    extra_props = getattr(video, 'extra_props', {})
+                                    downloader = DownloaderFactory.get_downloader(video.url, self.settings_manager, extra_props)
+                                    video_key = str(video.video_id or video_order)
+
+                                    if self._should_skip_download(lesson_entry, "videos", video_key):
+                                        self.signals.result.emit(
+                                            f"    - Vídeo já baixado previamente pelo resumo: {video_name}"
+                                        )
+                                        lesson_report.videos.append(ItemDownloadResult(
+                                            name=video_name, status="skipped",
+                                        ))
+                                        continue
+
+                                    if self._skip_if_file_exists(video_path, "video"):
+                                        self.signals.result.emit(
+                                            f"    - [DISCO] Vídeo já existe no disco: {video_name}"
+                                        )
+                                        self._mark_resume_status(
+                                            course_id_str, module_key, lesson_key, "videos", video_key, True
+                                        )
+                                        lesson_report.videos.append(ItemDownloadResult(
+                                            name=video_name, status="skipped",
+                                        ))
+                                        continue
+
+                                    try:
+                                        self._run_with_retries(
+                                            lambda: downloader.download_video(
+                                                video.url, self.platform.get_session(), video_path, extra_props=extra_props
+                                            ),
+                                            description=f"Download do vídeo '{video_name}'",
+                                        )
+                                        last_downloaded_video_path = self._find_downloaded_media(video_path) or video_path
+                                        self._mark_resume_status(
+                                            course_id_str, module_key, lesson_key, "videos", video_key, True
+                                        )
+                                        self.signals.result.emit(f"    - Vídeo baixado: {last_downloaded_video_path.resolve()}")
+                                        lesson_report.videos.append(ItemDownloadResult(
+                                            name=video_name, status="success",
+                                        ))
+                                        self._maybe_run_ffmpeg_post_process(video_path)
+                                        self._maybe_transcribe_video(video_path)
+                                    except Exception as e:
+                                        err_type, err_msg = self._classify_error(e)
+                                        self._mark_resume_status(
+                                            course_id_str, module_key, lesson_key, "videos", video_key, False
+                                        )
+                                        self.signals.result.emit(
+                                            f"    - [ERROR] Falha ao baixar vídeo: {video_name} ({err_type})"
+                                        )
+                                        lesson_report.videos.append(ItemDownloadResult(
+                                            name=video_name, status="error",
+                                            error_type=err_type, error_message=err_msg,
+                                        ))
+
+                            if getattr(self.settings, "skip_attachment_download", False):
+                                self.signals.result.emit("    - [CONFIG] Pulando download de anexos (configuração ativa).")
+                            else:
+                                for attachment_index, attachment in enumerate(lesson_details.attachments, start=1):
+                                    attachment_order = attachment.order or attachment_index
+                                    full_attachment_name = sanitize_path_component(attachment.filename)
+                                    full_attachment_name = f"{attachment_order}. {full_attachment_name}"
+                                    full_attachment_name = truncate_filename_preserve_ext(full_attachment_name, getattr(self.settings, 'max_file_name_length', 30))
+                                    attachment_path = lesson_path / full_attachment_name
+
+                                    allowed_exts = self.settings.allowed_attachment_extensions
+                                    if allowed_exts:
+                                        normalized_exts = set()
+                                        for ext in allowed_exts:
+                                            ext = ext.strip().lower()
+                                            if ext:
+                                                if not ext.startswith("."):
+                                                    ext = "." + ext
+                                                normalized_exts.add(ext)
+
+                                        if normalized_exts and ".*" not in normalized_exts:
+                                            file_ext = (attachment.extension or "").strip().lower()
+                                            if file_ext and not file_ext.startswith("."):
+                                                file_ext = "." + file_ext
+
+                                            if file_ext not in normalized_exts:
+                                                self.signals.result.emit(
+                                                    f"    - [PULADO] Extensão não permitida: {attachment.filename}"
+                                                )
+                                                continue
+
+                                    logging.info(f"Baixando Anexo '{attachment.filename}' para '{attachment_path}'")
+                                    attachment_key = str(attachment.attachment_id or attachment_order)
+
+                                    if self._should_skip_download(lesson_entry, "attachments", attachment_key):
+                                        self.signals.result.emit(
+                                            f"    - Anexo já baixado previamente pelo resumo: {attachment.filename}"
+                                        )
+                                        lesson_report.attachments.append(ItemDownloadResult(
+                                            name=attachment.filename, status="skipped",
+                                        ))
+                                        continue
+
+                                    if self._skip_if_file_exists(attachment_path, "attachment"):
+                                        self.signals.result.emit(
+                                            f"    - [DISCO] Anexo já existe no disco: {attachment.filename}"
+                                        )
+                                        self._mark_resume_status(
+                                            course_id_str, module_key, lesson_key, "attachments", attachment_key, True
+                                        )
+                                        lesson_report.attachments.append(ItemDownloadResult(
+                                            name=attachment.filename, status="skipped",
+                                        ))
+                                        continue
+
+                                    try:
+                                        self._run_with_retries(
+                                            lambda: self.platform.download_attachment(
+                                                attachment, attachment_path, course_slug, course_id, module_id
+                                            ),
+                                            description=f"Download do anexo '{attachment.filename}'",
+                                        )
+                                        self._mark_resume_status(
+                                            course_id_str, module_key, lesson_key, "attachments", attachment_key, True
+                                        )
+                                        self.signals.result.emit(f"    - Anexo baixado: {attachment_path.resolve()}")
+                                        lesson_report.attachments.append(ItemDownloadResult(
+                                            name=attachment.filename, status="success",
+                                        ))
+                                    except Exception as e:
+                                        err_type, err_msg = self._classify_error(e)
+                                        self._mark_resume_status(
+                                            course_id_str, module_key, lesson_key, "attachments", attachment_key, False
+                                        )
+                                        self.signals.result.emit(
+                                            f"    - [ERROR] Falha ao baixar anexo: {attachment.filename} ({err_type})"
+                                        )
+                                        lesson_report.attachments.append(ItemDownloadResult(
+                                            name=attachment.filename, status="error",
+                                            error_type=err_type, error_message=err_msg,
+                                        ))
+
+                            if lesson_details.auxiliary_urls:
+                                if getattr(self.settings, "skip_auxiliary_urls_download", False):
+                                    self.signals.result.emit("      - [CONFIG] Pulando links extras (configuração ativa).")
+                                    self._mark_resume_status(
+                                        course_id_str, module_key, lesson_key, "auxiliary_urls", None, True
+                                    )
+                                else:
+                                    aux_path = lesson_path / f"Links Extras.txt"
+                                    if self._should_skip_download(lesson_entry, "auxiliary_urls"):
+                                        self.signals.result.emit(
+                                            "      - Links extras já salvos anteriormente. Pulando geração do arquivo."
+                                        )
+                                    elif self._skip_if_file_exists(aux_path, "auxiliary"):
+                                        self.signals.result.emit(
+                                            "      - [DISCO] Links extras já existem no disco. Pulando."
+                                        )
+                                        self._mark_resume_status(
+                                            course_id_str, module_key, lesson_key, "auxiliary_urls", None, True
+                                        )
+                                    else:
+                                        try:
+                                            with open(aux_path, 'w', encoding='utf-8') as aux_file:
+                                                for aux_index, aux in enumerate(lesson_details.auxiliary_urls, start=1):
+                                                    if hasattr(aux, 'url'):
+                                                        text = f"{aux.description or aux.title or 'Link'}: {aux.url}"
+                                                    else:
+                                                        text = str(aux)
+                                                    aux_file.write(f"{aux_index}. {text}\n")
+                                            self._mark_resume_status(
+                                                course_id_str, module_key, lesson_key, "auxiliary_urls", None, True
+                                            )
+                                        except Exception as exc:
+                                            logging.error("Falha ao salvar links extras: %s", exc, exc_info=True)
+                                            self._mark_resume_status(
+                                                course_id_str, module_key, lesson_key, "auxiliary_urls", None, False
+                                            )
+                                            raise
+                                    self.signals.result.emit(f"      - URL auxiliar salva em {aux_path.resolve()}")
+                            
+                            watch_behavior = getattr(self.settings, "lesson_watch_status_behavior", "none")
+                            mark_as_watched_bool = None
+                            if watch_behavior == "watched":
+                                mark_as_watched_bool = True
+                            elif watch_behavior == "unwatched":
+                                mark_as_watched_bool = False
+
+                            if mark_as_watched_bool is not None:
+                                self.signals.result.emit(f"      - Atualizando status para {'ASSISTIDO' if mark_as_watched_bool else 'NÃO ASSISTIDO'}...")
+                                try:
+                                    self._run_with_retries(
+                                        lambda: self.platform.mark_lesson_watched(lesson, mark_as_watched_bool),
+                                        description="Atualizar status da aula",
+                                        treat_false_as_failure=False
+                                    )
+                                except Exception as status_exc:
+                                     logging.error(f"Falha ao atualizar status da aula {lesson.get('title')}: {status_exc}")
+                                     self.signals.result.emit(f"      - [AVISO] Falha ao atualizar status: {status_exc}")
+
+                        except Exception as e:
+                            err_type, err_msg = self._classify_error(e)
+                            logging.error(f"Failed to fetch details for lesson '{lesson_title}': {e}")
+                            self._mark_resume_status(
+                                course_id_str, module_key, lesson_key, "description", None, False
+                            )
+                            self.signals.result.emit(f"    - [ERROR] Falha em obter dados da aula: {lesson_title} ({err_type})")
+                            lesson_report.status = "error"
+                            lesson_report.error_message = f"{err_type}: {err_msg}"
+
+                            if getattr(self.settings, "delete_folder_on_error", False):
+                                try:
+                                    if lesson_path.exists():
+                                        shutil.rmtree(lesson_path)
+                                        self.signals.result.emit(f"    - [INFO] Pasta da aula excluída devido ao erro: {lesson_path}")
+                                except Exception as del_err:
+                                    logging.error(f"Falha ao excluir pasta da aula {lesson_path}: {del_err}")
+                                    self.signals.result.emit(f"    - [ERROR] Falha ao excluir pasta da aula: {del_err}")
+
+                        # Compute final lesson status if not already set to "error"
+                        if lesson_report.status != "error":
+                            has_errors = any(
+                                v.status == "error" for v in lesson_report.videos
+                            ) or any(
+                                a.status == "error" for a in lesson_report.attachments
+                            )
+                            has_success = any(
+                                v.status == "success" for v in lesson_report.videos
+                            ) or any(
+                                a.status == "success" for a in lesson_report.attachments
+                            )
+                            if has_errors and has_success:
+                                lesson_report.status = "partial"
+                            elif has_errors:
+                                lesson_report.status = "error"
+                            else:
+                                lesson_report.status = "success"
+
+                        self._download_report.append(lesson_report)
+                        self.signals.lesson_status.emit(lesson_report.status)
+
+                        if self._history_manager and self._history_session_id is not None:
+                            try:
+                                self._history_manager.record_lesson(
+                                    self._history_session_id,
+                                    course_id_str,
+                                    course_data.get("name", f"Curso-{course_id}"),
+                                    module.get("title", "Módulo sem titulo"),
+                                    lesson.get("title", "Aula sem titulo"),
+                                    lesson_report,
+                                    started_at=lesson_started_at,
+                                    lesson_path=str(lesson_path),
+                                )
+                            except Exception as exc:
+                                logging.error("Falha ao registrar aula no histórico: %s", exc)
+
+                        if lesson_report.status in ("error", "partial"):
+                            self._retry_lessons.add((course_id_str, module_index - 1, lesson_index - 1))
+
+                        if lesson_report.status == "partial":
+                            self._partial_count += 1
+                        elif lesson_report.status == "error":
+                            self._error_count += 1
+
+                        pause_on_partial = getattr(self.settings, "pause_on_partial_count", 0)
+                        pause_on_error = getattr(self.settings, "pause_on_error_count", 0)
+                        should_auto_pause = False
+                        if pause_on_partial > 0 and self._partial_count >= pause_on_partial:
+                            self.signals.result.emit(
+                                f"    -- Download pausado automaticamente: {self._partial_count} aula(s) parcial(is)."
+                            )
+                            self._partial_count = 0
+                            should_auto_pause = True
+                        if pause_on_error > 0 and self._error_count >= pause_on_error:
+                            self.signals.result.emit(
+                                f"    -- Download pausado automaticamente: {self._error_count} aula(s) com erro."
+                            )
+                            self._error_count = 0
+                            should_auto_pause = True
+                        if should_auto_pause:
+                            self._pause_event.clear()
+                            self.signals.auto_paused.emit()
+                            self._wait_if_paused()
+                            if self._cancelled:
+                                break
+
+                        if self.resume_manager and self.resume_state:
+                            self.resume_state["completed"] = self.resume_manager.is_complete(
+                                self.resume_state
+                            )
+                            self._persist_resume_state()
+
+                        lessons_processed += 1
+                        progress = int((lessons_processed / total_lessons) * 100) if total_lessons > 0 else 0
+                        self.signals.progress.emit(progress)
+
+                        delay_setting = getattr(self.settings, "lesson_access_delay", 0)
+                        if delay_setting != 0:
+                            wait_time = 0.0
+                            if delay_setting > 0:
+                                wait_time = float(delay_setting)
+                            elif delay_setting == -1 and last_downloaded_video_path and last_downloaded_video_path.exists():
+                                wait_time = self._get_video_duration(last_downloaded_video_path)
+                            
+                            if wait_time > 0:
+                                self.signals.result.emit(f"    - Aguardando {wait_time:.1f}s antes da próxima aula...")
+                                time.sleep(wait_time)
+
+            self._emit_download_report()
+            if self._cancelled:
+                self._finish_history_session("cancelled")
+                self.signals.result.emit("Download cancelado pelo usuario.")
+            else:
+                self._finish_history_session("completed")
+                self.signals.result.emit("Processo de download concluído.")
+                if total_lessons == 0:
+                    self.signals.progress.emit(100)
+
+        except Exception as e:
+            logging.error(f"An unexpected error occurred in DownloadWorker: {e}", exc_info=True)
+            self._emit_download_report()
+            self._finish_history_session("error")
+            self.signals.error.emit((type(e), e, str(e)))
+        finally:
+            if self._transcription_queue is not None:
+                if self._cancelled:
+                    self._transcription_queue.cancel()
+                else:
+                    self.signals.result.emit("Aguardando transcrições paralelas restantes...")
+                    self._transcription_queue.finish_and_wait()
+                    self.signals.result.emit("Todas as transcrições paralelas foram concluídas.")
+            retry = self._build_retry_selection()
+            if retry:
+                self.signals.retry_selection.emit(json.dumps(retry))
+            self.platform.close()
+            self.signals.finished.emit()

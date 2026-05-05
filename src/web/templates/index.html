@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Katomart - Dashboard de Downloads</title>
+    <style>
+        :root {
+            --bg: #f5f6fa;
+            --bg-card: #ffffff;
+            --bg-hover: #f0f1f5;
+            --text: #1a1a2e;
+            --text-muted: #6b7280;
+            --accent: #4f46e5;
+            --accent-light: #eef2ff;
+            --success: #16a34a;
+            --success-bg: #dcfce7;
+            --partial: #d97706;
+            --partial-bg: #fef3c7;
+            --error: #dc2626;
+            --error-bg: #fee2e2;
+            --skipped: #6b7280;
+            --skipped-bg: #f3f4f6;
+            --border: #e5e7eb;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+        }
+        a { color: var(--accent); text-decoration: none; }
+        a:hover { text-decoration: underline; }
+
+        .header {
+            background: var(--bg-card);
+            padding: 14px 24px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+        }
+        .header h1 { font-size: 18px; font-weight: 700; color: var(--accent); }
+        .header nav a {
+            color: var(--text-muted);
+            padding: 4px 12px;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+        .header nav a:hover, .header nav a.active {
+            color: var(--accent);
+            background: var(--accent-light);
+            text-decoration: none;
+        }
+
+        .container { max-width: 960px; margin: 0 auto; padding: 24px; }
+
+        .breadcrumb {
+            font-size: 13px;
+            color: var(--text-muted);
+            margin-bottom: 16px;
+        }
+        .breadcrumb a { color: var(--text-muted); }
+        .breadcrumb a:hover { color: var(--accent); }
+
+        h2.page-title { font-size: 18px; font-weight: 600; margin-bottom: 16px; }
+
+        /* Cards */
+        .card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            margin-bottom: 10px;
+            overflow: hidden;
+            transition: box-shadow 0.15s;
+        }
+        .card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+        .card a.card-link {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 16px 20px;
+            color: inherit;
+            text-decoration: none;
+        }
+        .card-name { font-size: 15px; font-weight: 600; }
+        .card-meta { font-size: 13px; color: var(--text-muted); margin-top: 2px; }
+        .card-right { text-align: right; }
+
+        /* Badges */
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+        .badge-success        { background: var(--success-bg); color: var(--success); }
+        .badge-partial        { background: var(--partial-bg); color: var(--partial); }
+        .badge-error          { background: var(--error-bg);   color: var(--error); }
+        .badge-skipped        { background: var(--skipped-bg); color: var(--skipped); }
+        .badge-not_selected   { background: #e0e7ff; color: #4338ca; }
+        .status-row { display: flex; gap: 6px; flex-wrap: wrap; }
+
+        /* Stats */
+        .stats-row {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        .stat-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 14px;
+            text-align: center;
+        }
+        .stat-card .value { font-size: 24px; font-weight: 700; }
+        .stat-card .label { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+
+        /* Tree */
+        .module-block {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            margin-bottom: 12px;
+            overflow: hidden;
+        }
+        .module-header {
+            padding: 12px 18px;
+            font-size: 14px;
+            font-weight: 600;
+            background: var(--bg);
+            border-bottom: 1px solid var(--border);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .module-header .chevron {
+            font-size: 10px;
+            transition: transform 0.2s;
+            color: var(--text-muted);
+        }
+        .module-header.collapsed .chevron { transform: rotate(-90deg); }
+        .module-body { padding: 0; }
+        .module-body.hidden { display: none; }
+
+        .lesson-block { border-bottom: 1px solid var(--border); }
+        .lesson-block:last-child { border-bottom: none; }
+        .lesson-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 10px 18px;
+            cursor: pointer;
+        }
+        .lesson-header:hover { background: var(--bg-hover); }
+        .lesson-left { display: flex; align-items: center; gap: 8px; }
+        .lesson-name { font-size: 13px; font-weight: 500; }
+        .lesson-time { font-size: 11px; color: var(--text-muted); }
+        .lesson-right { display: flex; align-items: center; gap: 8px; }
+
+        .lesson-detail { padding: 0 18px 10px 36px; display: none; }
+        .lesson-detail.open { display: block; }
+        .item-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 4px 0;
+            font-size: 12px;
+            border-bottom: 1px solid rgba(0,0,0,0.03);
+        }
+        .item-row:last-child { border-bottom: none; }
+        .item-name { color: var(--text); }
+        .item-type {
+            font-size: 10px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            background: var(--bg);
+            padding: 1px 6px;
+            border-radius: 4px;
+            margin-right: 6px;
+        }
+        .item-error { font-size: 11px; color: var(--error); margin-top: 2px; }
+
+        /* Filter toggle */
+        .filter-bar {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 16px;
+            font-size: 13px;
+            color: var(--text-muted);
+        }
+        .filter-bar input[type="checkbox"] { accent-color: var(--accent); }
+
+        /* Transcribe button */
+        .btn-transcribe {
+            background: var(--accent);
+            color: #fff;
+            border: none;
+            border-radius: 6px;
+            padding: 3px 10px;
+            font-size: 11px;
+            font-weight: 600;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+        .btn-transcribe:hover { opacity: 0.85; }
+        .btn-transcribe:disabled { opacity: 0.5; cursor: default; }
+        .btn-transcribe.done { background: var(--success); }
+        .btn-transcribe.error { background: var(--error); }
+
+        /* Empty */
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: var(--text-muted);
+        }
+        .empty-state h2 { font-size: 18px; margin-bottom: 6px; color: var(--text); }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Katomart</h1>
+        <nav>
+            <a href="/" class="{% if active_page == 'home' %}active{% endif %}">Plataformas</a>
+        </nav>
+    </div>
+
+    <div class="container">
+
+    {# ==================== HOME: Platform list ==================== #}
+    {% if active_page == 'home' %}
+        <h2 class="page-title">Plataformas</h2>
+
+        {% if platforms and platforms|length > 0 %}
+            {% for p in platforms %}
+            <div class="card">
+                <a class="card-link" href="/platform/{{ p.platform_name }}">
+                    <div>
+                        <div class="card-name">{{ p.platform_name }}</div>
+                        <div class="card-meta">{{ p.session_count }} sessao(oes) de download</div>
+                    </div>
+                    <div class="card-right">
+                        <div class="card-meta">Ultima: {{ p.last_session|brt_date }}</div>
+                    </div>
+                </a>
+            </div>
+            {% endfor %}
+        {% else %}
+            <div class="empty-state">
+                <h2>Nenhum historico encontrado</h2>
+                <p>Ative o historico de downloads nas configuracoes e faca um download para ver os dados aqui.</p>
+            </div>
+        {% endif %}
+
+    {# ==================== COURSES: Course list for a platform ==================== #}
+    {% elif active_page == 'courses' %}
+        <div class="breadcrumb">
+            <a href="/">Plataformas</a> &rsaquo; {{ platform_name }}
+        </div>
+        <h2 class="page-title">Cursos - {{ platform_name }}</h2>
+
+        {% if courses and courses|length > 0 %}
+            {% for c in courses %}
+            <div class="card">
+                <a class="card-link" href="/platform/{{ platform_name }}/course/{{ c.course_id }}">
+                    <div>
+                        <div class="card-name">{{ c.course_name }}</div>
+                        <div class="card-meta">{{ c.total_lessons }} aula(s) processada(s)</div>
+                    </div>
+                    <div class="card-right">
+                        <div class="status-row">
+                            {% if c.success_count %}<span class="badge badge-success">{{ c.success_count }} ok</span>{% endif %}
+                            {% if c.partial_count %}<span class="badge badge-partial">{{ c.partial_count }} parcial</span>{% endif %}
+                            {% if c.error_count %}<span class="badge badge-error">{{ c.error_count }} erro</span>{% endif %}
+                            {% if c.skipped_count %}<span class="badge badge-skipped">{{ c.skipped_count }} pulado</span>{% endif %}
+                        </div>
+                        <div class="card-meta" style="margin-top: 4px;">Ultimo: {{ c.last_download|brt_date }}</div>
+                    </div>
+                </a>
+            </div>
+            {% endfor %}
+        {% else %}
+            <div class="empty-state">
+                <h2>Nenhum curso encontrado</h2>
+            </div>
+        {% endif %}
+
+    {# ==================== COURSE DETAIL: Module/Lesson/Item tree ==================== #}
+    {% elif active_page == 'course_detail' %}
+        <div class="breadcrumb">
+            <a href="/">Plataformas</a> &rsaquo;
+            <a href="/platform/{{ platform_name }}">{{ platform_name }}</a> &rsaquo;
+            {{ course_name }}
+        </div>
+        <h2 class="page-title">{{ course_name }}</h2>
+
+        {% if modules %}
+            {% set ns = namespace(total=0, ok=0, partial=0, err=0, skip=0, nosel=0) %}
+            {% for mod_name, mod_lessons in modules.items() %}
+                {% for l in mod_lessons %}
+                    {% set ns.total = ns.total + 1 %}
+                    {% if l.status == 'success' %}{% set ns.ok = ns.ok + 1 %}
+                    {% elif l.status == 'partial' %}{% set ns.partial = ns.partial + 1 %}
+                    {% elif l.status == 'error' %}{% set ns.err = ns.err + 1 %}
+                    {% elif l.status == 'skipped' %}{% set ns.skip = ns.skip + 1 %}
+                    {% elif l.status == 'not_selected' %}{% set ns.nosel = ns.nosel + 1 %}{% endif %}
+                {% endfor %}
+            {% endfor %}
+
+            <div class="stats-row">
+                <div class="stat-card"><div class="value">{{ ns.total }}</div><div class="label">Total</div></div>
+                <div class="stat-card"><div class="value" style="color:var(--success)">{{ ns.ok }}</div><div class="label">Sucesso</div></div>
+                <div class="stat-card"><div class="value" style="color:var(--partial)">{{ ns.partial }}</div><div class="label">Parcial</div></div>
+                <div class="stat-card"><div class="value" style="color:var(--error)">{{ ns.err }}</div><div class="label">Erro</div></div>
+                <div class="stat-card"><div class="value" style="color:var(--skipped)">{{ ns.skip }}</div><div class="label">Pulado</div></div>
+                {% if ns.nosel > 0 %}
+                <div class="stat-card"><div class="value" style="color:#4338ca">{{ ns.nosel }}</div><div class="label">Nao selecionado</div></div>
+                {% endif %}
+            </div>
+
+            {% if ns.nosel > 0 %}
+            <div class="filter-bar">
+                <input type="checkbox" id="showNotSelected" onchange="toggleNotSelected(this.checked)">
+                <label for="showNotSelected">Mostrar aulas nao selecionadas</label>
+            </div>
+            {% endif %}
+
+            {% for mod_name, mod_lessons in modules.items() %}
+            <div class="module-block">
+                <div class="module-header" onclick="toggleModule(this)">
+                    <span class="chevron">&#9660;</span>
+                    {{ mod_name }}
+                    <span style="margin-left:auto; font-weight:400; font-size:12px; color:var(--text-muted)">{{ mod_lessons|length }} aula(s)</span>
+                </div>
+                <div class="module-body">
+                    {% for lesson in mod_lessons %}
+                    <div class="lesson-block" data-status="{{ lesson.status }}"{% if lesson.status == 'not_selected' %} style="display:none"{% endif %}>
+                        <div class="lesson-header" onclick="toggleLesson(this)">
+                            <div class="lesson-left">
+                                <span class="badge badge-{{ lesson.status }}">{{ lesson.status }}</span>
+                                <span class="lesson-name">{{ lesson.lesson_name }}</span>
+                            </div>
+                            <div class="lesson-right">
+                                {% if lesson.lesson_path and lesson.status != 'not_selected' and lesson.video_count and lesson.video_count > 0 %}
+                                    <button class="btn-transcribe" data-lesson-id="{{ lesson.id }}"
+                                            onclick="event.stopPropagation(); transcribe({{ lesson.id }}, this)">Transcrever</button>
+                                {% endif %}
+                                {% if lesson.started_at %}
+                                    <span class="lesson-time" title="Inicio: {{ lesson.started_at|brt }}">{{ lesson.started_at|brt }}</span>
+                                {% endif %}
+                                {% if lesson.completed_at %}
+                                    <span class="lesson-time" title="Fim: {{ lesson.completed_at|brt }}">&rarr; {{ lesson.completed_at|brt }}</span>
+                                {% endif %}
+                            </div>
+                        </div>
+                        <div class="lesson-detail">
+                            {% if lesson.files and lesson.files|length > 0 %}
+                                {% for item in lesson.files %}
+                                <div class="item-row">
+                                    <div>
+                                        <span class="item-type">{{ item.item_type }}</span>
+                                        <span class="item-name">{{ item.name }}</span>
+                                        {% if item.error_message %}
+                                            <div class="item-error">{{ item.error_type }}: {{ item.error_message }}</div>
+                                        {% endif %}
+                                    </div>
+                                    <span class="badge badge-{{ item.status }}">{{ item.status }}</span>
+                                </div>
+                                {% endfor %}
+                            {% else %}
+                                <div style="font-size:12px; color:var(--text-muted); padding: 4px 0;">Nenhum arquivo registrado</div>
+                            {% endif %}
+                            {% if lesson.error_message %}
+                                <div class="item-error" style="margin-top:4px;">{{ lesson.error_message }}</div>
+                            {% endif %}
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+            {% endfor %}
+        {% else %}
+            <div class="empty-state">
+                <h2>Nenhuma aula encontrada</h2>
+            </div>
+        {% endif %}
+
+    {% endif %}
+    </div>
+
+    <script>
+        function toggleModule(header) {
+            header.classList.toggle('collapsed');
+            header.nextElementSibling.classList.toggle('hidden');
+        }
+        function toggleLesson(header) {
+            header.nextElementSibling.classList.toggle('open');
+        }
+        function toggleNotSelected(show) {
+            document.querySelectorAll('.lesson-block[data-status="not_selected"]').forEach(function(el) {
+                el.style.display = show ? '' : 'none';
+            });
+        }
+        async function transcribe(lessonId, btn) {
+            btn.textContent = 'Transcrevendo...';
+            btn.disabled = true;
+            try {
+                var resp = await fetch('/api/transcribe/' + lessonId, {method: 'POST'});
+                var data = await resp.json();
+                if (data.status === 'error') {
+                    btn.textContent = 'Erro';
+                    btn.classList.add('error');
+                    btn.title = data.message || '';
+                    return;
+                }
+                pollTranscription(lessonId, btn);
+            } catch (e) {
+                btn.textContent = 'Erro';
+                btn.classList.add('error');
+                btn.title = String(e);
+            }
+        }
+        function pollTranscription(lessonId, btn) {
+            fetch('/api/transcribe/' + lessonId)
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    if (data.status === 'done') {
+                        btn.textContent = 'Concluido';
+                        btn.classList.add('done');
+                    } else if (data.status === 'error') {
+                        btn.textContent = 'Erro';
+                        btn.classList.add('error');
+                        btn.title = data.message || '';
+                    } else {
+                        setTimeout(function() { pollTranscription(lessonId, btn); }, 3000);
+                    }
+                });
+        }
+    </script>
+</body>
+</html>
