@@ -284,14 +284,27 @@ Para usuários gratuitos: como obter o cookie alfacon_session:
 
     @staticmethod
     def _extract_course_title(anchor) -> str:
-        for target in (anchor, *anchor.find_parents(limit=4)):
-            heading = target.find(["h3", "h4", "h5", "strong"]) if target else None
-            if heading:
-                text = heading.get_text(" ", strip=True)
+        # Highlighted "Seu curso atual" card wraps an <h2> inside the anchor.
+        for tag in anchor.find_all(["h2", "h3", "h4", "h5", "strong"]):
+            text = tag.get_text(" ", strip=True)
+            if text:
+                return text
+        # Regular grid cards expose the title via <a class="card-link">TITLE</a>.
+        text = anchor.get_text(" ", strip=True)
+        if text:
+            return text
+        # Fallback scoped to the nearest card container, so we never bleed into
+        # sibling widgets like the filter sidebar (which contains "Filtros").
+        for parent in anchor.find_parents(limit=4):
+            classes = parent.get("class") or []
+            if not any("card" in cls for cls in classes):
+                continue
+            for tag in parent.find_all(["h2", "h3", "h4", "h5", "strong"]):
+                text = tag.get_text(" ", strip=True)
                 if text:
                     return text
-        text = anchor.get_text(" ", strip=True)
-        return text or ""
+            break
+        return ""
 
     def fetch_course_content(self, courses: List[Dict[str, Any]]) -> Dict[str, Any]:
         if not self._session:
