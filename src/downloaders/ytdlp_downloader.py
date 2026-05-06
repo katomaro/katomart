@@ -62,27 +62,31 @@ class YtdlpDownloader(BaseDownloader):
             ydl_opts['ffmpeg_location'] = str(Path(ffmpeg_exe).parent)
 
         if "vimeo" in url.lower():
+            # Why: domain-restricted Vimeo embeds require the embedding site's
+            # Referer from the very first request, and broken IPv6 routes to
+            # player.vimeo.com surface as "failed to resolve host" — forcing
+            # IPv4 via source_address sidesteps that.
+            referer = extra_props.get('referer') if extra_props else None
+            vimeo_opts = ydl_opts.copy()
+            vimeo_opts['source_address'] = '0.0.0.0'
+            if referer:
+                vimeo_opts['http_headers'] = {'Referer': referer}
+
             try:
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                with yt_dlp.YoutubeDL(vimeo_opts) as ydl:
                     ydl.download([url])
                 return True
             except Exception as e:
-                logging.warning(f"Standard Vimeo download failed: {e}. Retrying with referer...")
-                
-                referer = extra_props.get('referer') if extra_props else None
-                if not referer:
-                    logging.error("No referer available for retry.")
-                    return False
-
-                opts_with_ref = ydl_opts.copy()
-                opts_with_ref['http_headers'] = {'Referer': referer}
-
+                logging.warning(f"Vimeo download failed (IPv4 + referer): {e}. Retrying without source_address...")
+                fallback_opts = ydl_opts.copy()
+                if referer:
+                    fallback_opts['http_headers'] = {'Referer': referer}
                 try:
-                    with yt_dlp.YoutubeDL(opts_with_ref) as ydl:
+                    with yt_dlp.YoutubeDL(fallback_opts) as ydl:
                         ydl.download([url])
                     return True
                 except Exception as e2:
-                    logging.error(f"Vimeo download with referer failed: {e2}")
+                    logging.error(f"Vimeo download fallback failed: {e2}")
                     return False
 
         if extra_props and 'referer' in extra_props:
