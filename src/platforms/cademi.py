@@ -785,7 +785,7 @@ Assinantes ativos podem informar usuario/senha para login automatico.
                     description_type="text",
                 )
 
-        video_div = soup.find("div", class_=re.compile(r"video-(pandavideo|vturb)"))
+        video_div = soup.find("div", class_=re.compile(r"video-(pandavideo|vturb|vimeo)"))
         if video_div:
             iframe = video_div.find("iframe")
             if iframe and iframe.get("src"):
