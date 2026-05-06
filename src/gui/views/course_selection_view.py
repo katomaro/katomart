@@ -68,8 +68,12 @@ class CourseSelectionView(QWidget):
 
     def update_courses(self, courses: List[Dict[str, Any]]) -> None:
         """Clears and repopulates the course list widget."""
+        # Don't reapply the search box as a local filter here: results coming
+        # from a remote platform search are already filtered server-side, and
+        # the user's query rarely appears verbatim as a substring of the
+        # returned course titles (the API does fuzzy/keyword matching).
         self._all_courses = courses
-        self._filter_items(self.search_input.text())
+        self._filter_items("")
 
     def _perform_search(self) -> None:
         """Executes the search or filter logic."""
