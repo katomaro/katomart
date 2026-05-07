@@ -63,31 +63,19 @@ class YtdlpDownloader(BaseDownloader):
 
         if "vimeo" in url.lower():
             # Why: domain-restricted Vimeo embeds require the embedding site's
-            # Referer from the very first request, and broken IPv6 routes to
-            # player.vimeo.com surface as "failed to resolve host" — forcing
-            # IPv4 via source_address sidesteps that.
+            # Referer from the very first request — without it Vimeo serves a
+            # "not available" page that yt-dlp can't extract.
             referer = extra_props.get('referer') if extra_props else None
             vimeo_opts = ydl_opts.copy()
-            vimeo_opts['source_address'] = '0.0.0.0'
             if referer:
                 vimeo_opts['http_headers'] = {'Referer': referer}
-
             try:
                 with yt_dlp.YoutubeDL(vimeo_opts) as ydl:
                     ydl.download([url])
                 return True
             except Exception as e:
-                logging.warning(f"Vimeo download failed (IPv4 + referer): {e}. Retrying without source_address...")
-                fallback_opts = ydl_opts.copy()
-                if referer:
-                    fallback_opts['http_headers'] = {'Referer': referer}
-                try:
-                    with yt_dlp.YoutubeDL(fallback_opts) as ydl:
-                        ydl.download([url])
-                    return True
-                except Exception as e2:
-                    logging.error(f"Vimeo download fallback failed: {e2}")
-                    return False
+                logging.error(f"Vimeo download failed: {e}")
+                return False
 
         if extra_props and 'referer' in extra_props:
             ydl_opts['http_headers'] = {'Referer': extra_props['referer']}
