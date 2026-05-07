@@ -221,7 +221,11 @@ class BunnyStreamDownloader(BaseDownloader):
         ydl_opts: Dict[str, Any] = {
             "format": "bestvideo+bestaudio/best",
             "allow_unplayable_formats": True,
-            "outtmpl": str(temp_path / "video.encrypted.%(ext)s"),
+            # Why: bestvideo+bestaudio downloads two HLS variants in parallel.
+            # Bunny serves audio in fmp4 too, so both ends up with ext=mp4 and
+            # collide on the same path → Windows file lock. format_id keeps
+            # them distinct without dragging in the long video GUID via %(id)s.
+            "outtmpl": str(temp_path / "video.encrypted.f%(format_id)s.%(ext)s"),
             "keepvideo": True,
             "http_headers": {
                 "User-Agent": self.settings.user_agent,
