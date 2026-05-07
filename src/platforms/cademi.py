@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
 import time
@@ -811,6 +812,25 @@ Assinantes ativos podem informar usuario/senha para login automatico.
                         logger.warning(
                             "Cademi: vturb video %s could not be resolved to HLS", video_url
                         )
+                elif "video-vimeo" in classes or "vimeo.com" in video_url:
+                    resolved = self._resolve_vimeo_video(video_url)
+                    if resolved:
+                        hls_url, vimeo_video_id = resolved
+                        content.videos.append(
+                            Video(
+                                video_id=vimeo_video_id or data_id or str(item_id),
+                                url=hls_url,
+                                order=lesson.get("order", 1),
+                                title=lesson.get("title", "Aula"),
+                                size=0,
+                                duration=0,
+                                extra_props={"referer": self._site_url + "/"},
+                            )
+                        )
+                    else:
+                        logger.warning(
+                            "Cademi: vimeo video %s could not be resolved to HLS", video_url
+                        )
                 else:
                     content.videos.append(
                         Video(
@@ -845,6 +865,24 @@ Assinantes ativos podem informar usuario/senha para login automatico.
                             )
                             break
                         logger.warning("Cademi: converteai iframe %s could not be resolved", src)
+                        continue
+                    if "vimeo" in src:
+                        resolved = self._resolve_vimeo_video(src)
+                        if resolved:
+                            hls_url, vimeo_video_id = resolved
+                            content.videos.append(
+                                Video(
+                                    video_id=vimeo_video_id or str(item_id),
+                                    url=hls_url,
+                                    order=lesson.get("order", 1),
+                                    title=lesson.get("title", "Aula"),
+                                    size=0,
+                                    duration=0,
+                                    extra_props={"referer": self._site_url + "/"},
+                                )
+                            )
+                            break
+                        logger.warning("Cademi: vimeo iframe %s could not be resolved to HLS", src)
                         continue
                     vid_id = self._extract_video_id(src)
                     content.videos.append(
@@ -903,6 +941,66 @@ Assinantes ativos podem informar usuario/senha para login automatico.
             if match:
                 return match.group(1)
         return ""
+
+    def _resolve_vimeo_video(self, embed_url: str) -> Optional[Tuple[str, str]]:
+        """Fetches the player.vimeo.com embed and returns (hls_master_url, video_id).
+
+        Why: yt-dlp's vimeo extractor uses curl_cffi for impersonation, and on
+        some Windows/ISP setups libcurl cannot resolve player.vimeo.com even
+        when the system DNS works fine (failure mode: curl error 6 "Could not
+        resolve host"). Pulling the embed page through the platform session
+        bypasses curl_cffi entirely; the m3u8 we extract points at vimeocdn,
+        which yt-dlp downloads as a plain HLS stream without re-hitting
+        player.vimeo.com.
+        """
+        try:
+            resp = self._session.get(
+                embed_url,
+                headers={"Referer": self._site_url + "/"},
+                timeout=30,
+            )
+            resp.raise_for_status()
+            body = resp.text
+        except Exception as exc:
+            logger.warning("Cademi: vimeo embed fetch failed (%s): %s", embed_url, exc)
+            return None
+
+        marker = re.search(r"window\.playerConfig\s*=\s*", body)
+        if not marker:
+            return None
+        start = marker.end()
+        end = body.find("</script>", start)
+        if end == -1:
+            return None
+        raw = body[start:end].rstrip().rstrip(";").rstrip()
+        try:
+            config = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+
+        try:
+            hls = config["request"]["files"]["hls"]
+        except (KeyError, TypeError):
+            return None
+
+        cdns = hls.get("cdns") or {}
+        default_cdn = hls.get("default_cdn")
+        cdn = cdns.get(default_cdn) if default_cdn else None
+        if not cdn and cdns:
+            cdn = next(iter(cdns.values()))
+        if not cdn:
+            return None
+
+        url = cdn.get("avc_url") or cdn.get("url")
+        if not url:
+            return None
+
+        video_id = ""
+        video_block = config.get("video") or {}
+        if isinstance(video_block, dict) and video_block.get("id"):
+            video_id = str(video_block["id"])
+
+        return url, video_id
 
     def _resolve_vturb_video(self, embed_url: str) -> Optional[Tuple[str, str]]:
         """Fetches the vturb/ConverteAI embed page and builds the HLS master URL.
