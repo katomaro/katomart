@@ -195,14 +195,23 @@ class NutrorPlatform(BasePlatform):
     @classmethod
     def auth_instructions(cls) -> str:
         return """
-ATENÇÃO: EM CONFIGURAÇÕES VOCÊ DEVE ATIVAR REAUTENTICAÇÃO AUTOMÁTICA, A SESSÃO DESSA PLATAFORMA DUA 12 MINUTOS!
-Para autenticação manual (Token Direto, não recomendado, use credenciais se possível):
-1. Acesse https://app.nutror.com, faça login e aperte F12.
-2. Vá na aba 'Rede' (Network) e filtre por 'search'.
-3. Recarregue a página (F5).
-4. Clique na requisição 'search?page=1...'.
-5. Na aba 'Cabeçalhos' (Headers), procure por 'Authorization'.
-6. Copie TODO o código que vem depois da palavra 'Bearer '.
+ATENÇÃO: o token desta plataforma dura apenas 12 minutos. Em Configurações, ative "Reautenticação Automática" para o app renovar a sessão sozinho durante downloads longos.
+
+Três formas de autenticar, em ordem de preferência:
+
+1) USUÁRIO + SENHA (automático)
+Preencha email e senha nos campos acima. O app abre o navegador em segundo plano, faz login e captura o token sozinho. Use sempre que o login não exigir código por email, captcha ou outra etapa extra.
+
+2) EMULAR NAVEGADOR (manual, para 2FA por email / captcha)
+Marque "Emular Navegador (2FA/Captcha)" e deixe email/senha em branco. O app abre uma janela do navegador visível; faça o login completo dentro dela, incluindo digitar o código que a Eduzz envia por email. Quando a página inicial do app.nutror.com terminar de carregar, o token é capturado automaticamente — depois disso é só confirmar na interface do Katomart para o navegador fechar.
+
+3) TOKEN DIRETO (último recurso)
+Como a sessão dura só 12 minutos, esse modo costuma quebrar no meio do download. Use apenas se as opções acima falharem.
+- Acesse https://app.nutror.com, faça login e aperte F12.
+- Vá na aba 'Rede' (Network) e filtre por 'search'.
+- Recarregue a página (F5) e clique na requisição 'search?page=1...'.
+- Na aba 'Cabeçalhos' (Headers), copie o valor do header 'Authorization' (sem o prefixo 'Bearer ').
+- Cole no campo Token acima.
 """.strip()
 
     def authenticate(self, credentials: Dict[str, Any]) -> None:
