@@ -208,18 +208,18 @@ Assinantes ativos podem informar usuario/senha para login automatico.
 
         soup = BeautifulSoup(response.text, "html.parser")
         courses: List[Dict[str, Any]] = []
+        seen_ids: set[str] = set()
 
-        cards = soup.select("div.card[data-id]")
-        for card in cards:
-            course_id = card.get("data-id", "")
-            if not course_id:
+        # MemberKit uses two layouts on the home page:
+        # - div.card[data-id]   → wide info banners; title text in <a class="text-base">
+        # - div.poster[data-id] → tall course tiles in swipers; image-only anchor, title only in slug
+        entries = soup.select("div.card[data-id], div.poster[data-id]")
+        for entry in entries:
+            course_id = entry.get("data-id", "")
+            if not course_id or course_id in seen_ids:
                 continue
 
-            link = card.select_one("a.text-base")
-            if not link:
-                link = card.select_one("a[href]")
-
-            name = link.get_text(strip=True) if link else f"Curso {course_id}"
+            link = entry.select_one("a.text-base") or entry.select_one("a[href]")
             href = link.get("href", "") if link else ""
 
             # Handle fully-qualified URLs: same-site → extract path, external → skip
@@ -235,6 +235,18 @@ Assinantes ativos podem informar usuario/senha para login automatico.
             # href is like /137888-formacao-escritorio-contabil-do-zero
             slug = href.lstrip("/") if href else f"{course_id}"
 
+            name = link.get_text(strip=True) if link else ""
+            if not name:
+                img = entry.select_one("img[alt]")
+                if img:
+                    name = (img.get("alt") or "").strip()
+            if not name and slug:
+                slug_tail = re.sub(r"^\d+-", "", slug)
+                name = slug_tail.replace("-", " ").strip().title() or f"Curso {course_id}"
+            if not name:
+                name = f"Curso {course_id}"
+
+            seen_ids.add(course_id)
             courses.append({
                 "id": course_id,
                 "name": name,
