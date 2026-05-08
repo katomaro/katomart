@@ -42,6 +42,10 @@ class NutrorTokenFetcher(PlaywrightTokenFetcher):
 
     def __init__(self):
         self.captured_cookies: List[Dict[str, Any]] = []
+        # Refresh JWT pulled from page localStorage at login time. The 2026-05
+        # SSO migration moved this out of cookies and into JS-side storage
+        # (key: "refreshToken", same name the legacy cookie used).
+        self.captured_refresh_token: Optional[str] = None
 
     @property
     def login_url(self) -> str:
@@ -159,6 +163,16 @@ class NutrorTokenFetcher(PlaywrightTokenFetcher):
                 self.captured_cookies = await page.context.cookies()
             except Exception:
                 self.captured_cookies = []
+            try:
+                # JS-side storage of the refresh JWT after the new SSO flow.
+                # Falls back to the legacy `refreshToken` cookie on accounts
+                # that still see the old shape (the localStorage read returns
+                # None and the cookie path in the platform handles the rest).
+                self.captured_refresh_token = await page.evaluate(
+                    "() => localStorage.getItem('refreshToken')"
+                )
+            except Exception:
+                self.captured_refresh_token = None
 
         return auth_header, url
 
@@ -169,6 +183,10 @@ class NutrorPlatform(BasePlatform):
         super().__init__(api_service, settings_manager)
         self._token_fetcher = NutrorTokenFetcher()
         self.cookies: List[Dict[str, Any]] = []
+        # Refresh JWT lifted from localStorage at login. Used by
+        # `_attempt_api_refresh` to call /oauth/refresh on the new SSO flow
+        # where the legacy `refreshToken` cookie is no longer set.
+        self.refresh_token: Optional[str] = None
 
     @classmethod
     def auth_fields(cls) -> List[AuthField]:
@@ -217,6 +235,7 @@ Para autenticação manual (Token Direto, não recomendado, use credenciais se p
                 wait_for_user_confirmation=(confirmation_event.wait if confirmation_event else None),
             )
             self.cookies = self._token_fetcher.captured_cookies
+            self.refresh_token = self._token_fetcher.captured_refresh_token
             return token
         except Exception as exc:
             raise ConnectionError("Falha ao autenticar na Nutror via navegador.") from exc
@@ -263,23 +282,24 @@ Para autenticação manual (Token Direto, não recomendado, use credenciais se p
             raise
 
     def _attempt_api_refresh(self) -> bool:
-        # DEPRECATED (2026-05): The 2026-05 SSO migration stopped setting the
-        # `refreshToken` cookie — the refresh JWT now comes back in the body
-        # of /oauth/eduzzaccount/validate (`data.refresh_token`) and the
-        # learner-api expects it via a different endpoint shape that this
-        # function does not yet implement. In practice this method now always
-        # returns False on accounts on the new flow, falling through to a
-        # full re-login in `refresh_auth`. Kept untouched to preserve the old
-        # path for any not-yet-migrated tenant. Replace by capturing
-        # `data.refresh_token` from the validate response and POSTing it to
-        # the new refresh endpoint when the rollout is complete.
-        if not self.cookies or not self._session:
-            logger.debug("Nutror: Cannot api-refresh, cookies or session missing.")
+        # Endpoint, headers and response shape are unchanged across the 2026-05
+        # SSO migration — the only thing that moved is where the refresh JWT
+        # lives. Source order:
+        #   1. self.refresh_token  — captured from page localStorage at login
+        #                            (new SSO flow, the dominant path).
+        #   2. cookies[refreshToken] — DEPRECATED (2026-05): legacy cookie
+        #                            kept as a fallback for any not-yet-migrated
+        #                            tenant. Drop once rollout is confirmed.
+        if not self._session:
+            logger.debug("Nutror: Cannot api-refresh, session missing.")
             return False
 
-        refresh_token = next((c['value'] for c in self.cookies if c['name'] == 'refreshToken'), None)
+        refresh_token = self.refresh_token or next(
+            (c['value'] for c in self.cookies if c['name'] == 'refreshToken'),
+            None,
+        )
         if not refresh_token:
-            logger.warning("Nutror: 'refreshToken' cookie not found (deprecated path). Skipping API refresh.")
+            logger.warning("Nutror: refresh token unavailable (no localStorage capture and no legacy cookie). Skipping API refresh.")
             return False
             
         try:
