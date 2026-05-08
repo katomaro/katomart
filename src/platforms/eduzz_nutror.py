@@ -52,7 +52,11 @@ class NutrorTokenFetcher(PlaywrightTokenFetcher):
         return [
             "https://learner-api.nutror.com/user",
             "https://learner-api.nutror.com/learner/course/search",
-            "https://learner-api.nutror.com/oauth/eduzzaccount/validate"
+            "https://learner-api.nutror.com/oauth/eduzzaccount/validate",
+            # Broad /learner/ prefix added 2026-05: catches /learner/alerts which
+            # is the first authenticated call the SPA fires after the new
+            # accounts.eduzz.com SSO + email-code 2FA flow completes.
+            "https://learner-api.nutror.com/learner/",
         ]
 
     async def fill_credentials(self, page: Page, username: str, password: str) -> None:
@@ -70,21 +74,93 @@ class NutrorTokenFetcher(PlaywrightTokenFetcher):
 
     async def _capture_authorization_header(self, page: Page) -> Tuple[Optional[str], Optional[str]]:
         """
-        Override to capture token from cookies if header capture fails or as a fallback.
-        Eduzz stores the token in 'newAuthToken' cookie.
-        """
-        start_time = time.time()
-        while time.time() - start_time < (self.network_idle_timeout_ms / 1000):
-            cookies = await page.context.cookies()
-            cookie_names = {c['name']: c['value'] for c in cookies}
-            
-            if 'newAuthToken' in cookie_names and 'refreshToken' in cookie_names:
-                self.captured_cookies = cookies
-                return f"Bearer {cookie_names['newAuthToken']}", page.url
+        Race two strategies — first non-None result wins. Snapshots the page
+        context cookies on success either way so the platform can carry
+        `accounts-ssid`, `downloadSession`, `tokenExp` etc. into the requests
+        session for subsequent API calls.
 
-            await asyncio.sleep(0.5)
-            
-        return None, None
+        1. Legacy cookie poll: looks for `newAuthToken` + `refreshToken`. Eduzz
+           stopped setting these as part of the 2026-05 SSO migration; kept
+           as a fallback in case some accounts/tenants still see the old shape.
+        2. Authenticated request sniff: listens for the first request to a
+           target learner-api endpoint that actually carries a Bearer header.
+           The bearer JWT now lives in the response body of
+           /oauth/eduzzaccount/validate and is replayed by the SPA on every
+           subsequent request — including /learner/alerts which fires
+           seconds after the validate handshake.
+        """
+
+        async def legacy_cookie_capture() -> Tuple[Optional[str], Optional[str]]:
+            # DEPRECATED (2026-05): Eduzz dropped both `newAuthToken` and
+            # `refreshToken` cookies in the SSO migration. The bearer JWT now
+            # lives in the response body of /oauth/eduzzaccount/validate and
+            # is held in JS memory by the SPA. This path stays as a fallback
+            # only to cover any tenant/account that hasn't been migrated yet.
+            # Remove once the new SSO is confirmed rolled out everywhere.
+            deadline = time.time() + (self.network_idle_timeout_ms / 1000)
+            while time.time() < deadline:
+                cookies = await page.context.cookies()
+                cookie_names = {c['name']: c['value'] for c in cookies}
+                if 'newAuthToken' in cookie_names and 'refreshToken' in cookie_names:
+                    return f"Bearer {cookie_names['newAuthToken']}", page.url
+                await asyncio.sleep(0.5)
+            return None, None
+
+        async def authed_request_sniff() -> Tuple[Optional[str], Optional[str]]:
+            loop = asyncio.get_event_loop()
+            future: asyncio.Future = loop.create_future()
+
+            def on_request(req) -> None:
+                if future.done():
+                    return
+                if not any(req.url.startswith(e) for e in self.target_endpoints):
+                    return
+                auth = req.headers.get("authorization", "")
+                if auth.lower().startswith("bearer "):
+                    future.set_result((auth, req.url))
+
+            page.on("request", on_request)
+            try:
+                return await asyncio.wait_for(
+                    future, timeout=self.network_idle_timeout_ms / 1000
+                )
+            except asyncio.TimeoutError:
+                return None, None
+            finally:
+                try:
+                    page.remove_listener("request", on_request)
+                except Exception:
+                    pass
+
+        cookie_task = asyncio.create_task(legacy_cookie_capture())
+        header_task = asyncio.create_task(authed_request_sniff())
+
+        auth_header: Optional[str] = None
+        url: Optional[str] = None
+        pending = {cookie_task, header_task}
+        while pending:
+            done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+            for t in done:
+                try:
+                    result = t.result()
+                except Exception:
+                    continue
+                if result and result[0]:
+                    auth_header, url = result
+                    pending = set()
+                    break
+
+        for t in (cookie_task, header_task):
+            if not t.done():
+                t.cancel()
+
+        if auth_header:
+            try:
+                self.captured_cookies = await page.context.cookies()
+            except Exception:
+                self.captured_cookies = []
+
+        return auth_header, url
 
 class NutrorPlatform(BasePlatform):
     """Implementação da plataforma Nutror (Eduzz)."""
@@ -119,11 +195,24 @@ Para autenticação manual (Token Direto, não recomendado, use credenciais se p
     def _exchange_credentials_for_token(self, username: str, password: str, credentials: Dict[str, Any]) -> str:
         use_browser_emulation = bool(credentials.get("browser_emulation"))
         confirmation_event = credentials.get("manual_auth_confirmation")
-        
+
+        # When browser_emulation is on, the user opts to drive the login by
+        # hand — typically because the new accounts.eduzz.com flow asks for an
+        # email code in a popup that's brittle to automate. Pass empty creds
+        # so the base fetcher's `manual_login = not (username and password)`
+        # branch fires and skips the auto-fill+submit step. The `wait_for_user_confirmation`
+        # event keeps the visible browser open until the user clicks "I'm done"
+        # in the GUI, by which time the SPA will have fired its first
+        # authenticated request and the bearer header will have been sniffed.
+        if use_browser_emulation:
+            fetch_username, fetch_password = "", ""
+        else:
+            fetch_username, fetch_password = username, password
+
         try:
             token = self._token_fetcher.fetch_token(
-                username,
-                password,
+                fetch_username,
+                fetch_password,
                 headless=not use_browser_emulation,
                 wait_for_user_confirmation=(confirmation_event.wait if confirmation_event else None),
             )
@@ -143,7 +232,7 @@ Para autenticação manual (Token Direto, não recomendado, use credenciais se p
             "Origin": "https://app.nutror.com",
             "Referer": "https://app.nutror.com/",
             "Accept": "application/json, text/plain, */*",
-            "FrontVersion": "1458"
+            "FrontVersion": "1475"
         })
 
         if self.cookies:
@@ -174,13 +263,23 @@ Para autenticação manual (Token Direto, não recomendado, use credenciais se p
             raise
 
     def _attempt_api_refresh(self) -> bool:
+        # DEPRECATED (2026-05): The 2026-05 SSO migration stopped setting the
+        # `refreshToken` cookie — the refresh JWT now comes back in the body
+        # of /oauth/eduzzaccount/validate (`data.refresh_token`) and the
+        # learner-api expects it via a different endpoint shape that this
+        # function does not yet implement. In practice this method now always
+        # returns False on accounts on the new flow, falling through to a
+        # full re-login in `refresh_auth`. Kept untouched to preserve the old
+        # path for any not-yet-migrated tenant. Replace by capturing
+        # `data.refresh_token` from the validate response and POSTing it to
+        # the new refresh endpoint when the rollout is complete.
         if not self.cookies or not self._session:
             logger.debug("Nutror: Cannot api-refresh, cookies or session missing.")
             return False
-            
+
         refresh_token = next((c['value'] for c in self.cookies if c['name'] == 'refreshToken'), None)
         if not refresh_token:
-            logger.warning("Nutror: 'refreshToken' cookie not found. Skipping API refresh.")
+            logger.warning("Nutror: 'refreshToken' cookie not found (deprecated path). Skipping API refresh.")
             return False
             
         try:
