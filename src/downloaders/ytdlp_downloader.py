@@ -85,5 +85,23 @@ class YtdlpDownloader(BaseDownloader):
                 ydl.download([url])
             return True
         except Exception as e:
+            # Why: Cloudflare-fronted hosts reject the generic extractor's
+            # default HTTP client; yt-dlp's own error message tells users to
+            # retry with `generic:impersonate` so it routes through curl_cffi
+            # with a browser TLS/JA3 fingerprint.
+            message = str(e).lower()
+            if 'impersonate' in message or 'cloudflare' in message or '403' in message:
+                logging.warning(
+                    f"yt-dlp blocked (likely Cloudflare); retrying with generic:impersonate. Original error: {e}"
+                )
+                fallback_opts = ydl_opts.copy()
+                fallback_opts['extractor_args'] = {'generic': {'impersonate': ['']}}
+                try:
+                    with yt_dlp.YoutubeDL(fallback_opts) as ydl:
+                        ydl.download([url])
+                    return True
+                except Exception as e2:
+                    logging.error(f"Error downloading with yt-dlp (impersonate fallback): {e2}")
+                    return False
             logging.error(f"Error downloading with yt-dlp: {e}")
             return False
