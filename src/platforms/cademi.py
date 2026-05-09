@@ -831,6 +831,34 @@ Assinantes ativos podem informar usuario/senha para login automatico.
                         logger.warning(
                             "Cademi: vimeo video %s could not be resolved to HLS", video_url
                         )
+                        # Fallback: emit a Video pointing at the canonical
+                        # vimeo.com/<id> URL so the lesson is still surfaced
+                        # to the user and yt-dlp gets a chance — some networks
+                        # resolve vimeo.com fine even when player.vimeo.com
+                        # fails through the platform session. Without this,
+                        # a transient resolver failure makes the entire video
+                        # disappear from the lesson.
+                        fallback_id = (
+                            data_id
+                            or self._extract_video_id(video_url)
+                            or ""
+                        )
+                        fallback_url = (
+                            f"https://vimeo.com/{fallback_id}"
+                            if fallback_id and str(fallback_id).isdigit()
+                            else video_url
+                        )
+                        content.videos.append(
+                            Video(
+                                video_id=fallback_id or str(item_id),
+                                url=fallback_url,
+                                order=lesson.get("order", 1),
+                                title=lesson.get("title", "Aula"),
+                                size=0,
+                                duration=0,
+                                extra_props={"referer": self._site_url + "/"},
+                            )
+                        )
                 else:
                     content.videos.append(
                         Video(
@@ -883,7 +911,27 @@ Assinantes ativos podem informar usuario/senha para login automatico.
                             )
                             break
                         logger.warning("Cademi: vimeo iframe %s could not be resolved to HLS", src)
-                        continue
+                        # Fallback: surface the lesson with the canonical
+                        # vimeo.com URL so yt-dlp can attempt the download.
+                        # Mirrors the same fallback in the video_div path above.
+                        fallback_id = self._extract_video_id(src) or ""
+                        fallback_url = (
+                            f"https://vimeo.com/{fallback_id}"
+                            if fallback_id and str(fallback_id).isdigit()
+                            else src
+                        )
+                        content.videos.append(
+                            Video(
+                                video_id=fallback_id or str(item_id),
+                                url=fallback_url,
+                                order=lesson.get("order", 1),
+                                title=lesson.get("title", "Aula"),
+                                size=0,
+                                duration=0,
+                                extra_props={"referer": self._site_url + "/"},
+                            )
+                        )
+                        break
                     vid_id = self._extract_video_id(src)
                     content.videos.append(
                         Video(
