@@ -235,7 +235,23 @@ Assinantes ativos podem informar usuario/senha para login automatico.
             # href is like /137888-formacao-escritorio-contabil-do-zero
             slug = href.lstrip("/") if href else f"{course_id}"
 
-            name = link.get_text(strip=True) if link else ""
+            # Title resolution, in priority order:
+            #   1. .poster__details h4  — new (2026-05+) layout: locked/rich
+            #      posters carry an overlay with <h4> title and <p> description.
+            #      Pulling the <h4> directly avoids the old fallback, which
+            #      would `get_text(strip=True)` the whole anchor and end up
+            #      concatenating title + description with no separator.
+            #   2. anchor's own visible text (works for the older `card` layout
+            #      where <a class="text-base"> wraps just the title).
+            #   3. <img alt="…"> on the poster image.
+            #   4. slug-derived (id stripped, dashes → spaces, Title Case).
+            #   5. literal fallback "Curso {id}".
+            name = ""
+            details_h4 = entry.select_one(".poster__details h4")
+            if details_h4:
+                name = details_h4.get_text(strip=True)
+            if not name:
+                name = link.get_text(strip=True) if link else ""
             if not name:
                 img = entry.select_one("img[alt]")
                 if img:
@@ -246,12 +262,18 @@ Assinantes ativos podem informar usuario/senha para login automatico.
             if not name:
                 name = f"Curso {course_id}"
 
+            # Detect lock state from the new layout's overlay icon. The old
+            # layout had no equivalent marker, so absence means "unlocked or
+            # unknown" — leave the existing `locked: False` default elsewhere.
+            locked = bool(entry.select_one(".card__lock"))
+
             seen_ids.add(course_id)
             courses.append({
                 "id": course_id,
                 "name": name,
                 "slug": slug,
                 "seller_name": "",
+                "locked": locked,
             })
 
         logger.debug("MemberKit: found %d courses", len(courses))
