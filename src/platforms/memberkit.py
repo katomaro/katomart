@@ -449,7 +449,15 @@ Assinantes ativos podem informar usuario/senha para login automatico.
 
                 # Extension from <span class="badge">
                 badge = link.select_one("span.badge")
-                extension = badge.get_text(strip=True).lower() if badge else ""
+                extension = badge.get_text(strip=True).lower().lstrip(".") if badge else ""
+
+                # Why: the worker writes the file using attachment.filename
+                # verbatim. MemberKit's UI shows the name and extension in
+                # separate elements, so we must splice the badge extension
+                # onto the filename when it isn't already there — otherwise
+                # the saved file has no extension.
+                if extension and not filename.lower().endswith(f".{extension}"):
+                    filename = f"{filename}.{extension}"
 
                 # Size from the last <p> with size text
                 size_p = link.select_one("p.shrink-0")
