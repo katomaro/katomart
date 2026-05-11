@@ -19,7 +19,10 @@ class AppSettings:
     audio_language: str = "pt-BR"
     keep_audio_only: bool = False
     try_keep_original_video_name: bool = False
-    user_agent: str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    user_agent: str = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36"
+    )
     download_retry_attempts: int = 0
     download_retry_delay_seconds: int = 60
     download_widevine: bool = False
