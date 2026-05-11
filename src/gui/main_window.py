@@ -12,8 +12,10 @@ from src.gui.views.course_selection_view import CourseSelectionView
 from src.gui.views.module_selection_view import ModuleSelectionView
 from src.gui.views.progress_view import ProgressView
 from src.gui.views.settings_view import SettingsView
+from src.gui.views.standalone_downloads_view import StandaloneDownloadsView
 from src.platforms.base import PlatformFactory, BasePlatform
 from src.app.workers import FetchCoursesWorker, FetchModulesWorker, DownloadWorker
+from src.app.standalone_worker import StandaloneDownloadWorker
 from src.app.version_checker import VersionCheckWorker
 from src.utils.filesystem import get_executable_path
 from src.utils.resume_manager import ResumeManager
@@ -35,6 +37,7 @@ class MainWindow(QMainWindow):
         self._selected_courses: list = []
         self._resume_state: dict | None = None
         self._current_worker: DownloadWorker | None = None
+        self._standalone_worker: StandaloneDownloadWorker | None = None
         self._retry_selection_json: str | None = None
         self._thread_pool = QThreadPool()
         self._dashboard_server: DashboardServer | None = None
@@ -53,8 +56,10 @@ class MainWindow(QMainWindow):
         self.auth_tab_widget = QTabWidget()
         self.auth_view = AuthView(self._settings_manager)
         self.settings_view = SettingsView(self._settings_manager)
+        self.standalone_downloads_view = StandaloneDownloadsView(self._settings_manager)
         self.auth_tab_widget.addTab(self.auth_view, "Authenticação")
         self.auth_tab_widget.addTab(self.settings_view, "Configurações")
+        self.auth_tab_widget.addTab(self.standalone_downloads_view, "(Previa) Download Avulso")
 
         self.course_selection_view = CourseSelectionView()
         self.module_selection_view = ModuleSelectionView()
@@ -98,6 +103,8 @@ class MainWindow(QMainWindow):
         self.course_selection_view.courses_selected.connect(self._fetch_modules)
         self.module_selection_view.download_requested.connect(self._start_download)
         self.settings_view.membership_updated.connect(self.auth_view.refresh_membership_state)
+        self.settings_view.membership_updated.connect(self.standalone_downloads_view.refresh_membership_state)
+        self.standalone_downloads_view.download_requested.connect(self._start_standalone_download)
         self.course_selection_view.search_requested.connect(self._search_courses)
         self.progress_view.pause_requested.connect(self._on_pause_download)
         self.progress_view.resume_requested.connect(self._on_resume_download)
@@ -322,6 +329,24 @@ class MainWindow(QMainWindow):
         worker.signals.retry_selection.connect(self._on_retry_selection_received)
         worker.signals.finished.connect(self._on_download_finished)
         self._thread_pool.start(worker)
+
+    def _start_standalone_download(self, urls: list) -> None:
+        """Runs the standalone-downloads worker without changing the active tab."""
+        view = self.standalone_downloads_view
+        view.set_download_active(True)
+        worker = StandaloneDownloadWorker(list(urls), self._settings_manager)
+        self._standalone_worker = worker
+        worker.signals.progress.connect(view.set_progress)
+        worker.signals.log.connect(view.log_message)
+        worker.signals.error.connect(self._handle_worker_error)
+        worker.signals.finished.connect(self._on_standalone_finished)
+        self._thread_pool.start(worker)
+
+    def _on_standalone_finished(self) -> None:
+        view = self.standalone_downloads_view
+        view.set_download_active(False)
+        view.log_message("Worker de downloads avulsos finalizado.")
+        self._standalone_worker = None
 
     def _handle_auth_confirmation_request(self, confirmation_event: Any) -> None:
         """Handles a request from the worker to confirm manual authentication."""
