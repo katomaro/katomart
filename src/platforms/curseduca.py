@@ -22,59 +22,153 @@ LESSON_WATCH_URL = "https://clas.curseduca.pro/bff/aulas/{lesson_uuid}/watch"
 
 def _extract_next_data(html_content: str) -> Optional[Dict[str, Any]]:
     """Extracts the Next.js RSC payload with course data from the HTML."""
-    # Find all __next_f.push calls and extract the RSC data lines
     script_pattern = r"self\.__next_f\.push\(\[1,\"(.*?)\"\]\)"
     matches = re.findall(script_pattern, html_content, re.DOTALL)
 
-    # Concatenate all RSC data and parse key:value pairs
-    rsc_data = "".join(matches)
-    # Unescape the JSON string escapes
-    rsc_data = rsc_data.replace("\\n", "\n").replace("\\\"", '"').replace("\\\\", "\\")
+    all_blocks = []
+    for block in matches:
+        unescaped = block.replace('\\"', '"').replace('\\n', '\n').replace('\\\\', '\\')
+        all_blocks.append(unescaped)
 
-    # Parse RSC format: each line is like "key:{json}" or "key:[json]"
+    rsc_raw = "".join(matches)
+    rsc_raw = rsc_raw.replace("\\n", "\n").replace('\\"', '"').replace("\\\\", "\\")
+
     refs: Dict[str, Any] = {}
-    for line in rsc_data.split("\n"):
-        line = line.strip()
-        if not line or ":" not in line:
+    key_pattern = re.compile(r'(?:^|\n)([0-9a-f]+):(.*?)(?=\n[0-9a-f]+:|$)', re.DOTALL)
+
+    for match in key_pattern.finditer(rsc_raw):
+        key = match.group(1).strip().lower()
+        value_str = match.group(2)
+
+        t_match = re.match(r'^T[0-9a-f]+,(.*)', value_str, re.DOTALL)
+        if t_match:
+            refs[key] = t_match.group(1).strip()
             continue
-        # Split on first colon to get key and value
-        colon_idx = line.find(":")
-        if colon_idx < 1:
+
+        if re.match(r'^\$[LW]', value_str.strip()):
             continue
-        key = line[:colon_idx]
-        value_str = line[colon_idx + 1:]
+
+        value_str = value_str.strip()
         try:
             refs[key] = json.loads(value_str)
         except json.JSONDecodeError:
-            continue
+            pass
 
-    def resolve_refs(obj: Any, depth: int = 0) -> Any:
-        """Recursively resolve $XX references."""
-        if depth > 50:
+    def resolve_refs(obj: Any, visited: frozenset = frozenset(), depth: int = 0) -> Any:
+        if depth > 100:
             return obj
-        if isinstance(obj, str) and obj.startswith("$"):
+        if isinstance(obj, str) and obj.startswith("$") and not obj.startswith("$L") and not obj.startswith("$W") and not obj.startswith("$undefined"):
             ref_key = obj[1:]
+            if ref_key in visited:
+                return obj
             if ref_key in refs:
-                return resolve_refs(refs[ref_key], depth + 1)
+                return resolve_refs(refs[ref_key], visited | {ref_key}, depth + 1)
             return obj
         if isinstance(obj, dict):
-            return {k: resolve_refs(v, depth + 1) for k, v in obj.items()}
+            return {k: resolve_refs(v, visited, depth + 1) for k, v in obj.items()}
         if isinstance(obj, list):
-            return [resolve_refs(item, depth + 1) for item in obj]
+            return [resolve_refs(item, visited, depth + 1) for item in obj]
         return obj
 
-    # Find the content/course structure - look for MODULE type objects
-    modules = []
+    def count_unresolved(obj: Any, depth: int = 0) -> int:
+        if depth > 50:
+            return 0
+        if isinstance(obj, str) and obj.startswith("$") and not obj.startswith("$L"):
+            return 1
+        if isinstance(obj, dict):
+            return sum(count_unresolved(v, depth + 1) for v in obj.values())
+        if isinstance(obj, list):
+            return sum(count_unresolved(i, depth + 1) for i in obj)
+        return 0
+
+    modules: List[Dict[str, Any]] = []
+    seen_module_ids: set = set()
+
+    # Refs-based extraction (standard RSC format) — only keep modules whose
+    # structure is fully resolvable from the refs dict.
     for key, value in refs.items():
         if isinstance(value, dict) and value.get("type") == "MODULE":
             resolved = resolve_refs(value)
+            if count_unresolved(resolved) != 0:
+                continue
+            module_id = resolved.get("data", {}).get("id") if isinstance(resolved.get("data"), dict) else None
+            if module_id is not None:
+                if module_id in seen_module_ids:
+                    continue
+                seen_module_ids.add(module_id)
             modules.append(resolved)
 
+    # Some Curseduca pages embed MODULE data inline as JSON arrays instead of
+    # behind $-refs, so the refs dict lacks the lesson objects (issue: "$47"
+    # never resolves). Scan blocks for inline `[{"type":"MODULE",...}]` arrays.
+    for unescaped in all_blocks:
+        for arr_start in re.finditer(r'\[\{"type":"MODULE"', unescaped):
+            start_pos = arr_start.start()
+
+            bracket_count = 0
+            end_pos = start_pos
+            in_string = False
+            escape_next = False
+
+            for i in range(start_pos, len(unescaped)):
+                char = unescaped[i]
+                if escape_next:
+                    escape_next = False
+                    continue
+                if char == '\\':
+                    escape_next = True
+                    continue
+                if char == '"' and not escape_next:
+                    in_string = not in_string
+                    continue
+                if in_string:
+                    continue
+                if char == '[':
+                    bracket_count += 1
+                elif char == ']':
+                    bracket_count -= 1
+                    if bracket_count == 0:
+                        end_pos = i + 1
+                        break
+
+            arr_str = unescaped[start_pos:end_pos]
+            try:
+                arr = json.loads(arr_str)
+            except json.JSONDecodeError:
+                continue
+
+            for item in arr:
+                if not isinstance(item, dict) or item.get("type") != "MODULE":
+                    continue
+
+                module_data = item.get("data", {})
+                if not isinstance(module_data, dict):
+                    continue
+
+                module_id = module_data.get("id")
+                if module_id and module_id in seen_module_ids:
+                    continue
+                if module_id:
+                    seen_module_ids.add(module_id)
+
+                resolved_module = resolve_refs(item)
+                modules.append(resolved_module)
+
     if modules:
+        unresolved = sum(count_unresolved(m) for m in modules)
+        if unresolved:
+            logging.warning("Curseduca: %s refs ainda nao resolvidas apos parse", unresolved)
         return {"modules": modules, "refs": refs}
 
-    # Fallback: no MODULE refs found — look for course content in React component refs.
-    # Some Curseduca pages have LESSons directly in the structure (no MODULE wrapper).
+    # Fallback: try to find content structure in refs
+    for key, value in refs.items():
+        if not isinstance(value, dict):
+            continue
+        content = value.get("content")
+        if isinstance(content, dict) and "structure" in content:
+            return {"content": {"content": resolve_refs(content)}}
+
+    # Fallback: look for React component refs with embedded course content
     for key, value in refs.items():
         if not isinstance(value, list) or len(value) < 4:
             continue
