@@ -813,7 +813,7 @@ Assinantes ativos podem informar usuario/senha para login automatico.
                             "Cademi: vturb video %s could not be resolved to HLS", video_url
                         )
                 elif "video-vimeo" in classes or "vimeo.com" in video_url:
-                    resolved = self._resolve_vimeo_video(video_url)
+                    resolved = self._resolve_vimeo_video(video_url, hint_video_id=data_id)
                     if resolved:
                         hls_url, vimeo_video_id = resolved
                         content.videos.append(
@@ -830,34 +830,6 @@ Assinantes ativos podem informar usuario/senha para login automatico.
                     else:
                         logger.warning(
                             "Cademi: vimeo video %s could not be resolved to HLS", video_url
-                        )
-                        # Fallback: emit a Video pointing at the canonical
-                        # vimeo.com/<id> URL so the lesson is still surfaced
-                        # to the user and yt-dlp gets a chance — some networks
-                        # resolve vimeo.com fine even when player.vimeo.com
-                        # fails through the platform session. Without this,
-                        # a transient resolver failure makes the entire video
-                        # disappear from the lesson.
-                        fallback_id = (
-                            data_id
-                            or self._extract_video_id(video_url)
-                            or ""
-                        )
-                        fallback_url = (
-                            f"https://vimeo.com/{fallback_id}"
-                            if fallback_id and str(fallback_id).isdigit()
-                            else video_url
-                        )
-                        content.videos.append(
-                            Video(
-                                video_id=fallback_id or str(item_id),
-                                url=fallback_url,
-                                order=lesson.get("order", 1),
-                                title=lesson.get("title", "Aula"),
-                                size=0,
-                                duration=0,
-                                extra_props={"referer": self._site_url + "/"},
-                            )
                         )
                 else:
                     content.videos.append(
@@ -911,27 +883,7 @@ Assinantes ativos podem informar usuario/senha para login automatico.
                             )
                             break
                         logger.warning("Cademi: vimeo iframe %s could not be resolved to HLS", src)
-                        # Fallback: surface the lesson with the canonical
-                        # vimeo.com URL so yt-dlp can attempt the download.
-                        # Mirrors the same fallback in the video_div path above.
-                        fallback_id = self._extract_video_id(src) or ""
-                        fallback_url = (
-                            f"https://vimeo.com/{fallback_id}"
-                            if fallback_id and str(fallback_id).isdigit()
-                            else src
-                        )
-                        content.videos.append(
-                            Video(
-                                video_id=fallback_id or str(item_id),
-                                url=fallback_url,
-                                order=lesson.get("order", 1),
-                                title=lesson.get("title", "Aula"),
-                                size=0,
-                                duration=0,
-                                extra_props={"referer": self._site_url + "/"},
-                            )
-                        )
-                        break
+                        continue
                     vid_id = self._extract_video_id(src)
                     content.videos.append(
                         Video(
@@ -990,7 +942,9 @@ Assinantes ativos podem informar usuario/senha para login automatico.
                 return match.group(1)
         return ""
 
-    def _resolve_vimeo_video(self, embed_url: str) -> Optional[Tuple[str, str]]:
+    def _resolve_vimeo_video(
+        self, embed_url: str, hint_video_id: str = ""
+    ) -> Optional[Tuple[str, str]]:
         """Fetches the player.vimeo.com embed and returns (hls_master_url, video_id).
 
         Why: yt-dlp's vimeo extractor uses curl_cffi for impersonation, and on
@@ -1000,35 +954,166 @@ Assinantes ativos podem informar usuario/senha para login automatico.
         bypasses curl_cffi entirely; the m3u8 we extract points at vimeocdn,
         which yt-dlp downloads as a plain HLS stream without re-hitting
         player.vimeo.com.
+
+        Two strategies in order — first one that yields HLS wins:
+          1. HTML scrape of the embed page for `window.playerConfig`.
+          2. Direct GET on `https://player.vimeo.com/video/<id>/config`,
+             which returns the same JSON shape but bypasses any HTML-layer
+             surprises (Cloudflare interstitials, A/B'd embed templates,
+             stripped responses, etc).
         """
+        # Strategy 1: HTML scrape
+        result = self._resolve_vimeo_via_html(embed_url)
+        if result:
+            return result
+
+        # Derive a video id either from hint (Cademi data-id) or by parsing the
+        # embed URL, then try the JSON config endpoint as a fallback.
+        video_id = (hint_video_id or "").strip() or self._extract_video_id(embed_url)
+        if video_id and str(video_id).isdigit():
+            result = self._resolve_vimeo_via_config(video_id)
+            if result:
+                return result
+
+        return None
+
+    def _vimeo_browser_headers(self, *, is_iframe: bool) -> Dict[str, str]:
+        """
+        Browser-like headers for player.vimeo.com requests. Vimeo's Cloudflare
+        layer 401s on protected videos when key Sec-Fetch / Sec-Ch-Ua signals
+        are missing — these are what a real iframe load carries and what the
+        captured HAR shows the browser sending. The User-Agent comes from
+        settings (default is a full Chrome 144 UA; bot-looking UAs trip the
+        same 401, see settings_manager.Settings.user_agent).
+        """
+        headers = {
+            "User-Agent": self._settings.user_agent,
+            "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+            "Referer": self._site_url + "/",
+            "Sec-Ch-Ua": '"Not(A:Brand";v="8", "Chromium";v="144"',
+            "Sec-Ch-Ua-Mobile": "?0",
+            "Sec-Ch-Ua-Platform": '"Windows"',
+            "Sec-Fetch-Site": "cross-site",
+        }
+        if is_iframe:
+            headers.update({
+                "Accept": (
+                    "text/html,application/xhtml+xml,application/xml;q=0.9,"
+                    "image/avif,image/webp,image/apng,*/*;q=0.8,"
+                    "application/signed-exchange;v=b3;q=0.7"
+                ),
+                "Sec-Fetch-Dest": "iframe",
+                "Sec-Fetch-Mode": "navigate",
+                "Upgrade-Insecure-Requests": "1",
+            })
+        else:
+            headers.update({
+                "Accept": "application/json, text/plain, */*",
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+            })
+        return headers
+
+    @staticmethod
+    def _log_vimeo_error_body(kind: str, url: str, exc: "requests.HTTPError") -> None:
+        """Log up to 400 chars of the error response body — useful for
+        spotting Cloudflare bot challenges vs 'private video' messages vs
+        domain-lock errors when Vimeo rejects the request."""
+        resp = getattr(exc, "response", None)
+        if resp is None:
+            logger.warning("Cademi: vimeo %s fetch failed (%s): %s", kind, url, exc)
+            return
+        snippet = ""
+        try:
+            snippet = (resp.text or "")[:400].replace("\n", " ")
+        except Exception:
+            pass
+        logger.warning(
+            "Cademi: vimeo %s fetch failed (%s): status=%s ct=%s body=%r",
+            kind, url, resp.status_code,
+            resp.headers.get("content-type", ""),
+            snippet,
+        )
+
+    def _resolve_vimeo_via_html(self, embed_url: str) -> Optional[Tuple[str, str]]:
         try:
             resp = self._session.get(
                 embed_url,
-                headers={"Referer": self._site_url + "/"},
+                headers=self._vimeo_browser_headers(is_iframe=True),
                 timeout=30,
             )
             resp.raise_for_status()
             body = resp.text
+        except requests.HTTPError as exc:
+            self._log_vimeo_error_body("embed", embed_url, exc)
+            return None
         except Exception as exc:
             logger.warning("Cademi: vimeo embed fetch failed (%s): %s", embed_url, exc)
             return None
 
         marker = re.search(r"window\.playerConfig\s*=\s*", body)
         if not marker:
+            logger.info(
+                "Cademi: vimeo embed %s returned %d bytes but had no window.playerConfig "
+                "(content-type=%s) — will try /config endpoint",
+                embed_url,
+                len(body),
+                resp.headers.get("content-type", ""),
+            )
             return None
         start = marker.end()
         end = body.find("</script>", start)
         if end == -1:
+            logger.info("Cademi: vimeo embed %s playerConfig had no closing </script>", embed_url)
             return None
         raw = body[start:end].rstrip().rstrip(";").rstrip()
         try:
             config = json.loads(raw)
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as exc:
+            logger.warning("Cademi: vimeo embed %s playerConfig JSON parse failed: %s", embed_url, exc)
             return None
 
+        return self._extract_hls_from_vimeo_config(config, source=f"embed {embed_url}")
+
+    def _resolve_vimeo_via_config(self, video_id: str) -> Optional[Tuple[str, str]]:
+        """
+        Hits Vimeo's `/video/<id>/config` JSON endpoint via the platform
+        session. Returns the same `request.files.hls` payload as the embedded
+        playerConfig — useful when the HTML embed comes back stripped or with
+        an interstitial that lacks the JSON we need.
+        """
+        config_url = f"https://player.vimeo.com/video/{video_id}/config"
+        try:
+            resp = self._session.get(
+                config_url,
+                headers=self._vimeo_browser_headers(is_iframe=False),
+                timeout=30,
+            )
+            resp.raise_for_status()
+            config = resp.json()
+        except requests.HTTPError as exc:
+            self._log_vimeo_error_body("/config", config_url, exc)
+            return None
+        except Exception as exc:
+            logger.warning(
+                "Cademi: vimeo /config endpoint fetch failed for video %s: %s",
+                video_id, exc,
+            )
+            return None
+
+        return self._extract_hls_from_vimeo_config(config, source=f"/config {video_id}")
+
+    @staticmethod
+    def _extract_hls_from_vimeo_config(
+        config: Dict[str, Any], source: str
+    ) -> Optional[Tuple[str, str]]:
         try:
             hls = config["request"]["files"]["hls"]
         except (KeyError, TypeError):
+            logger.info("Cademi: vimeo %s has no request.files.hls", source)
             return None
 
         cdns = hls.get("cdns") or {}
@@ -1037,10 +1122,12 @@ Assinantes ativos podem informar usuario/senha para login automatico.
         if not cdn and cdns:
             cdn = next(iter(cdns.values()))
         if not cdn:
+            logger.info("Cademi: vimeo %s has hls block but no usable cdn entry", source)
             return None
 
         url = cdn.get("avc_url") or cdn.get("url")
         if not url:
+            logger.info("Cademi: vimeo %s cdn entry missing avc_url/url", source)
             return None
 
         video_id = ""
