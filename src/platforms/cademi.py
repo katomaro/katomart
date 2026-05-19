@@ -786,14 +786,27 @@ Assinantes ativos podem informar usuario/senha para login automatico.
                     description_type="text",
                 )
 
-        video_div = soup.find("div", class_=re.compile(r"video-(pandavideo|vturb|vimeo)"))
+        video_div = soup.find("div", class_=re.compile(r"video-(pandavideo|vturb|vimeo|bunny|bunnystream|mediadelivery)"))
         if video_div:
             iframe = video_div.find("iframe")
             if iframe and iframe.get("src"):
                 video_url = iframe.get("src")
                 data_id = video_div.get("data-id", "")
                 classes = " ".join(video_div.get("class") or [])
-                if "video-vturb" in classes or "converteai" in video_url:
+                if "mediadelivery.net" in video_url or "bunny" in classes:
+                    bunny_id = self._extract_bunny_video_id(video_url) or data_id or str(item_id)
+                    content.videos.append(
+                        Video(
+                            video_id=bunny_id,
+                            url=video_url,
+                            order=lesson.get("order", 1),
+                            title=lesson.get("title", "Aula"),
+                            size=0,
+                            duration=0,
+                            extra_props={"referer": self._site_url + "/"},
+                        )
+                    )
+                elif "video-vturb" in classes or "converteai" in video_url:
                     resolved = self._resolve_vturb_video(video_url)
                     if resolved:
                         hls_url, vturb_video_id = resolved
@@ -847,7 +860,21 @@ Assinantes ativos podem informar usuario/senha para login automatico.
         if not content.videos:
             for iframe in soup.find_all("iframe", src=True):
                 src = iframe.get("src", "")
-                if any(p in src for p in ("youtube", "youtu.be", "vimeo", "pandavideo", "converteai")):
+                if any(p in src for p in ("youtube", "youtu.be", "vimeo", "pandavideo", "converteai", "mediadelivery.net")):
+                    if "mediadelivery.net" in src:
+                        bunny_id = self._extract_bunny_video_id(src) or str(item_id)
+                        content.videos.append(
+                            Video(
+                                video_id=bunny_id,
+                                url=src,
+                                order=lesson.get("order", 1),
+                                title=lesson.get("title", "Aula"),
+                                size=0,
+                                duration=0,
+                                extra_props={"referer": self._site_url + "/"},
+                            )
+                        )
+                        break
                     if "converteai" in src:
                         resolved = self._resolve_vturb_video(src)
                         if resolved:
@@ -921,6 +948,11 @@ Assinantes ativos podem informar usuario/senha para login automatico.
             )
 
         return content
+
+    @staticmethod
+    def _extract_bunny_video_id(url: str) -> str:
+        match = re.search(r"mediadelivery\.net/embed/\d+/([a-f0-9-]+)", url)
+        return match.group(1) if match else ""
 
     @staticmethod
     def _extract_video_id(url: str) -> str:
