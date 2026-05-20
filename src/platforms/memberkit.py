@@ -515,7 +515,11 @@ Assinantes ativos podem informar usuario/senha para login automatico.
             if vimeo_id:
                 return Video(
                     video_id=vimeo_id,
-                    url=f"https://vimeo.com/{vimeo_id}",
+                    # Why: MemberKit Vimeo videos use domain-level privacy. The
+                    # canonical vimeo.com/{id} page 404s for such videos even
+                    # with a Referer; only the player.vimeo.com embed URL works
+                    # (paired with the embedding-site Referer below).
+                    url=f"https://player.vimeo.com/video/{vimeo_id}",
                     order=lesson.get("order", 1),
                     title=lesson.get("title", "Aula"),
                     size=0,
@@ -532,7 +536,7 @@ Assinantes ativos podem informar usuario/senha para login automatico.
                 vimeo_id = vimeo_match.group(1)
                 return Video(
                     video_id=vimeo_id,
-                    url=f"https://vimeo.com/{vimeo_id}",
+                    url=f"https://player.vimeo.com/video/{vimeo_id}",
                     order=lesson.get("order", 1),
                     title=lesson.get("title", "Aula"),
                     size=0,
