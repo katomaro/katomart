@@ -17,7 +17,7 @@ from src.platforms.base import AuthField, AuthFieldType, BasePlatform, PlatformF
 HERMES_API_URL = "https://hermes-api.medcof.com.br"
 LMS_API_URL = "https://lms-api.medcof.tech"
 LOGIN_URL = "https://login.medcof.com.br"
-AULAS_ORIGIN_URL = "https://aulas-prime.medcof.com.br"
+AULAS_ORIGIN_URL = "https://aulas.medcof.com.br"
 
 AUTH_URL = f"{HERMES_API_URL}/auth/simple-sign-on"
 SSO_CALLBACK_URL = f"{LOGIN_URL}/api/auth/callback/credentials"
@@ -25,6 +25,7 @@ SSO_EXCHANGE_URL = f"{LMS_API_URL}/auth/v2/sso-hermes"
 USER_PROGRESS_URL = f"{LMS_API_URL}/product/user/progress"
 AQFM_BY_BLOCK_URL = f"{LMS_API_URL}/aqfm/by-block-number"
 VIMEO_GET_URL = f"{LMS_API_URL}/vimeo/get"
+SUPPORT_MATERIAL_DOWNLOAD_URL = f"{LMS_API_URL}/download/v1/support-material/supportMaterialId"
 
 
 class MedcofPlatform(BasePlatform):
@@ -543,23 +544,35 @@ Opção 2 - Token JWT:
         support_materials = lesson.get("support_materials", [])
 
         for mat_index, material in enumerate(support_materials, start=1):
-            mat_url = material.get("url", "")
-            mat_name = material.get("name", f"Material {mat_index}")
+            mat_id = material.get("identifier")
+            mat_name = (material.get("name") or f"Material {mat_index}").strip()
+            # New API exposes the S3 link as "hiperlink"; older shape used "url".
+            hiperlink = material.get("hiperlink") or material.get("url", "")
 
-            if mat_url:
-                extension = mat_url.rsplit(".", 1)[-1].split("?")[0] if "." in mat_url else "pdf"
-                filename = f"{mat_name}.{extension}"
+            if not mat_id and not hiperlink:
+                continue
 
-                content.attachments.append(
-                    Attachment(
-                        attachment_id=f"{lesson.get('id')}-mat-{mat_index}",
-                        url=mat_url,
-                        filename=filename,
-                        order=mat_index,
-                        extension=extension,
-                        size=0,
-                    )
+            last_segment = hiperlink.rsplit("/", 1)[-1] if hiperlink else ""
+            extension = last_segment.rsplit(".", 1)[-1].split("?")[0] if "." in last_segment else "pdf"
+            filename = f"{mat_name}.{extension}"
+
+            # The site downloads through the authenticated LMS endpoint rather than
+            # hitting S3 directly; fall back to the raw link only when no id is present.
+            if mat_id:
+                download_url = f"{SUPPORT_MATERIAL_DOWNLOAD_URL}?supportMaterialId={mat_id}"
+            else:
+                download_url = hiperlink
+
+            content.attachments.append(
+                Attachment(
+                    attachment_id=mat_id or f"{lesson.get('id')}-mat-{mat_index}",
+                    url=download_url,
+                    filename=filename,
+                    order=mat_index,
+                    extension=extension,
+                    size=0,
                 )
+            )
 
         if vimeo_id:
             video_data = self._fetch_vimeo_video(vimeo_id)
