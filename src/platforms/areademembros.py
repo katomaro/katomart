@@ -29,10 +29,17 @@ class AreaDeMembrosPlayground(BasePlatform):
 
     # Some whitelabels use the "classic" URL scheme, others use the "conteudo" scheme.
     _VITRINE_PATHS = ("/area/vitrine/home", "/area/vitrine")
-    _PRODUCT_HREF_PATTERNS = ("/area/conteudo/produto/", "/area/produto/")
+    _PRODUCT_HREF_PATTERNS = (
+        "/area/conteudo/produto/",
+        "/area/conteudo/listagem/",
+        "/area/produto/",
+    )
     _LESSON_HREF_PATTERNS = ("/area/conteudo/aula/", "/area/produto/item/")
     _LESSON_ID_REGEX = re.compile(r"/area/(?:conteudo/aula|produto/item)/(\d+)")
-    _PRODUCT_ID_REGEX = re.compile(r"/area/(?:conteudo/produto|produto)/(\d+)")
+    _PRODUCT_ID_REGEX = re.compile(r"/area/(?:conteudo/(?:produto|listagem)|produto)/(\d+)")
+    # The "swiper/netflix" layout exposes module entry points directly on the vitrine.
+    _MODULE_HREF_PATTERNS = ("/area/conteudo/modulo/",)
+    _MODULE_ID_REGEX = re.compile(r"/area/conteudo/modulo/(\d+)")
 
     def __init__(self, api_service: ApiService, settings_manager: SettingsManager):
         super().__init__(api_service, settings_manager)
@@ -220,7 +227,12 @@ Para obter o token de acesso:
         if courses:
             return courses
 
-        # Fallback for whitelabels without grupo-vitrine grouping (e.g. /area/vitrine/home).
+        # Newer "netflix/swiper" layout: div.vitrine[id^='vitrine-'] rows.
+        swiper_courses = self._fetch_courses_swiper(soup, vitrine_url)
+        if swiper_courses:
+            return swiper_courses
+
+        # Fallback for whitelabels without any grouping wrapper.
         # Treat each accessible product link as its own "course".
         return self._fetch_courses_flat(soup, vitrine_url)
 
@@ -245,6 +257,116 @@ Para obter o token de acesso:
         for element in elements:
             for match in element.select(selector):
                 yield match
+
+    def _collect_module_urls(self, scope) -> List[str]:
+        """Collects module URLs (/area/conteudo/modulo/{id}) inside a scope."""
+        urls: List[str] = []
+        seen: set = set()
+        selector = ", ".join(f"a[href*='{pattern}']" for pattern in self._MODULE_HREF_PATTERNS)
+        links = scope.select(selector) if hasattr(scope, "select") else self._select_in_each(scope, selector)
+        for link in links:
+            href = (link.get("href") or "").split("?")[0]
+            if not href:
+                continue
+            full_url = urljoin(self._base_url, href)
+            if full_url in seen:
+                continue
+            seen.add(full_url)
+            urls.append(full_url)
+        return urls
+
+    @staticmethod
+    def _is_locked(element: Any) -> bool:
+        classes = element.get("class") or []
+        return "sem-acesso" in classes or "acesso-bloqueado" in classes
+
+    @staticmethod
+    def _extract_swiper_row_title(vitrine: Any) -> Optional[str]:
+        title_elem = vitrine.select_one("div.main-title span, div.vitrine-title span")
+        if not title_elem:
+            return None
+        clone = BeautifulSoup(str(title_elem), "html.parser")
+        for svg in clone.find_all(["svg", "img"]):
+            svg.decompose()
+        text = clone.get_text(separator=" ", strip=True)
+        return re.sub(r"\s+", " ", text).strip() or None
+
+    @staticmethod
+    def _extract_card_title(link: Any, fallback: str) -> str:
+        caption = link.select_one(".item-titulo, .titulo, .nome, h3, h2")
+        text = ""
+        if caption:
+            text = caption.get_text(separator=" ", strip=True)
+        if not text:
+            text = link.get("aria-label") or link.get("title") or ""
+        if not text:
+            text = link.get_text(separator=" ", strip=True)
+        text = re.sub(r"\s+", " ", text).strip()
+        return text or fallback
+
+    def _fetch_courses_swiper(self, soup: BeautifulSoup, vitrine_url: str) -> List[Dict[str, Any]]:
+        """Parses the netflix/swiper vitrine layout (div.vitrine[id^='vitrine-'])."""
+        courses: List[Dict[str, Any]] = []
+        seen_course_ids: set = set()
+
+        for row_index, vitrine in enumerate(soup.select("div.vitrine[id^='vitrine-']"), start=1):
+            row_title = self._extract_swiper_row_title(vitrine)
+            accessible_items = [
+                item for item in vitrine.select("div.item-box") if not self._is_locked(item)
+            ]
+            if not accessible_items:
+                continue
+
+            # Module-style rows: every item-box is a module of a single product
+            # (the produto-id is on the swiper-container).
+            module_urls = self._collect_module_urls(accessible_items)
+            product_urls = self._collect_product_urls(accessible_items)
+
+            if module_urls and not product_urls:
+                swiper = vitrine.select_one("div.swiper-container[data-acesso-produto-id]")
+                product_id = (swiper.get("data-acesso-produto-id") if swiper else None) or \
+                    vitrine.get("id", "").replace("vitrine-", "")
+                if not product_id or product_id in seen_course_ids:
+                    continue
+                seen_course_ids.add(product_id)
+                courses.append({
+                    "id": product_id,
+                    "title": row_title or f"Curso {row_index}",
+                    "name": row_title or f"Curso {row_index}",
+                    "slug": product_id,
+                    "url": vitrine_url,
+                    "module_urls": module_urls,
+                    "seller_name": "Área de Membros",
+                })
+                continue
+
+            # Product-style rows: each item-box links to a distinct product (course).
+            for item_index, item in enumerate(accessible_items, start=1):
+                link = item.select_one(
+                    ", ".join(f"a[href*='{p}']" for p in self._PRODUCT_HREF_PATTERNS)
+                )
+                if not link:
+                    continue
+                href = (link.get("href") or "").split("?")[0]
+                match = self._PRODUCT_ID_REGEX.search(href)
+                if not match:
+                    continue
+                product_id = match.group(1)
+                if product_id in seen_course_ids:
+                    continue
+                seen_course_ids.add(product_id)
+                title = self._extract_card_title(link, fallback=row_title or f"Curso {item_index}")
+                courses.append({
+                    "id": product_id,
+                    "title": title,
+                    "name": title,
+                    "slug": product_id,
+                    "url": vitrine_url,
+                    "module_urls": [urljoin(self._base_url, href)],
+                    "seller_name": "Área de Membros",
+                })
+
+        return courses
 
     def _fetch_courses_flat(self, soup: BeautifulSoup, vitrine_url: str) -> List[Dict[str, Any]]:
         """Builds course entries from a flat vitrine layout (no grupo-vitrine wrapper)."""
@@ -463,7 +585,9 @@ Para obter o token de acesso:
     def _extract_course_title(soup: BeautifulSoup) -> Optional[str]:
         """Extracts the course title from the breadcrumb."""
         breadcrumb_links = soup.select(
-            "div.breadcrumb a[href*='/area/conteudo/produto/'], div.breadcrumb a[href*='/area/produto/']"
+            "div.breadcrumb a[href*='/area/conteudo/produto/'], "
+            "div.breadcrumb a[href*='/area/conteudo/listagem/'], "
+            "div.breadcrumb a[href*='/area/produto/']"
         )
         if breadcrumb_links:
             text = breadcrumb_links[-1].get_text(strip=True)
@@ -548,28 +672,42 @@ Para obter o token de acesso:
             if description_text:
                 content.description = Description(text=description_text, description_type="text")
 
-        # Extract video from video container iframe
-        iframe = soup.select_one(
+        # Extract videos. A lesson can carry several: a primary player
+        # (Spotlightr/Scaleup) plus extra iframes embedded in the article body
+        # (e.g. YouTube). Capture all of them, deduped by resolved URL.
+        iframes = soup.select(
             "div.class-video-container iframe, div.video-container iframe, "
             "div.video iframe, iframe.video-iframe"
         )
-        if iframe:
+        base_order = lesson.get("order", 1)
+        base_title = lesson.get("title", "Aula")
+        base_id = lesson.get("id") or base_title
+        seen_videos: set = set()
+        video_index = 0
+        for iframe in iframes:
             embed_url = iframe.get("src") or iframe.get("data-src")
-            if embed_url:
-                if not embed_url.startswith("http"):
-                    embed_url = urljoin(lesson_url, embed_url)
+            if not embed_url:
+                continue
+            if not embed_url.startswith("http"):
+                embed_url = urljoin(lesson_url, embed_url)
+            if embed_url in seen_videos:
+                continue
+            seen_videos.add(embed_url)
 
-                content.videos.append(
-                    Video(
-                        video_id=lesson.get("id") or lesson.get("title", "aula"),
-                        url=embed_url,
-                        order=lesson.get("order", 1),
-                        title=lesson.get("title", "Aula"),
-                        size=0,
-                        duration=0,
-                        extra_props={"referer": lesson_url},
-                    )
+            video_index += 1
+            video_id = str(base_id) if video_index == 1 else f"{base_id}_{video_index}"
+            video_title = base_title if video_index == 1 else f"{base_title} ({video_index})"
+            content.videos.append(
+                Video(
+                    video_id=video_id,
+                    url=embed_url,
+                    order=base_order,
+                    title=video_title,
+                    size=0,
+                    duration=0,
+                    extra_props={"referer": lesson_url},
                 )
+            )
 
         # Extract attachments — classic layout uses dedicated containers,
         # the conteudo layout inlines them as a.article-attach inside the article.
