@@ -362,7 +362,7 @@ class BunnyStreamDownloader(BaseDownloader):
             logging.error("Bunny: URL de embed inválida: %s", url)
             return False
 
-        parent_referer = extra_props.get("parent_referer")
+        parent_referer = extra_props.get("parent_referer") or extra_props.get("referer")
         bunny_session = self._new_bunny_session()
 
         embed_html = self._fetch_embed_html(url, bunny_session, parent_referer)

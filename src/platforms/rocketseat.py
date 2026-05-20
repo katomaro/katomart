@@ -1,5 +1,6 @@
 from typing import Any, Dict, List, Optional
 from pathlib import Path
+from urllib.parse import urlparse
 import requests
 import logging
 import json
@@ -434,12 +435,15 @@ class RocketSeatPlatform(BasePlatform):
             order=1,
             title=lesson.get("title", ""),
             size=0,
-            duration=lesson.get("duration") or 0
+            duration=lesson.get("duration") or 0,
+            # Bunny (lib 212524) trava o embed por Referer do domínio rocketseat;
+            # sem isso o HTML do embed não traz a playlist.m3u8.
+            extra_props={"referer": f"{BASE_URL}/"}
         )
-        
+
         description_text = lesson.get("description") or ""
         desc_obj = Description(text=description_text, description_type="markdown") if description_text else None
-        
+
         aux_urls = []
         if description_text:
             found_links = re.findall(r'\[([^\]]+)\]\((https?://[^)\s]+)\)', description_text)
@@ -453,11 +457,48 @@ class RocketSeatPlatform(BasePlatform):
                     description="Material Complementar identificado na descrição"
                 ))
 
+        # A aula carrega seus anexos no campo `files` (type DOWNLOAD = arquivo,
+        # type LINK = material externo como Figma/Notion).
+        raw_data = lesson.get("raw_data") or {}
+        files = raw_data.get("files")
+        if not isinstance(files, list):
+            files = []
+
+        attachments = []
+        for f_idx, f in enumerate(files, start=1):
+            if not isinstance(f, dict):
+                continue
+            f_url = f.get("url")
+            if not f_url:
+                continue
+            f_name = f.get("name") or f"anexo-{f_idx}"
+            f_type = (f.get("type") or "").upper()
+
+            if f_type == "LINK":
+                aux_urls.append(AuxiliaryURL(
+                    url_id=f"file-{lesson.get('id') or 'unknown'}-{f_idx}",
+                    url=f_url,
+                    order=len(aux_urls) + 1,
+                    title=f_name,
+                    description="Material Complementar"
+                ))
+                continue
+
+            extension = Path(urlparse(f_url).path).suffix.lstrip(".")
+            attachments.append(Attachment(
+                attachment_id=f"file-{lesson.get('id') or 'unknown'}-{f_idx}",
+                url=f_url,
+                filename=f_name,
+                order=f_idx,
+                extension=extension,
+                size=0
+            ))
+
         return LessonContent(
             description=desc_obj,
             auxiliary_urls=aux_urls,
             videos=[main_video],
-            attachments=[] 
+            attachments=attachments
         )
 
     def download_attachment(self, attachment: Attachment, download_path: Path, course_slug: str, course_id: str, module_id: str) -> bool:
