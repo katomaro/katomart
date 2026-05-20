@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import requests
+
+_YOUTUBE_ID_RE = re.compile(
+    r"(?:youtube\.com/(?:watch\?(?:.*&)?v=|embed/|shorts/|v/)|youtu\.be/)([A-Za-z0-9_-]{11})"
+)
 
 from src.app.api_service import ApiService
 from src.app.models import Attachment, Description, LessonContent, Video
@@ -115,8 +120,34 @@ Assinantes podem informar e-mail/senha para login automático.""".strip()
             "Origin": "https://app.hub.la",
             "Referer": "https://app.hub.la/",
             "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "en-GB,en-US;q=0.9,en;q=0.8",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+            "Priority": "u=1, i",
+            "Sec-Ch-Ua": '"Chromium";v="148", "Google Chrome";v="148", "Not/A)Brand";v="99"',
+            "Sec-Ch-Ua-Mobile": "?0",
+            "Sec-Ch-Ua-Platform": '"Windows"',
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-site",
             "User-Agent": self._settings.user_agent,
         })
+
+    def _get_with_refresh(self, url: str, *, params: Optional[Dict[str, Any]] = None, timeout: int = 30, stream: bool = False) -> requests.Response:
+        """GET with automatic refresh on 401/403 (Hub.la rejects stale tokens with 403)."""
+        if not self._session:
+            raise ConnectionError("Sessão não autenticada.")
+        resp = self._session.get(url, params=params, timeout=timeout, stream=stream)
+        if resp.status_code in (401, 403):
+            logger.info(f"Hub.la: {resp.status_code} em {url} — tentando refresh_auth e nova tentativa.")
+            try:
+                self.refresh_auth()
+            except Exception as e:
+                logger.warning(f"Hub.la: refresh_auth falhou: {e}")
+                resp.raise_for_status()
+                return resp
+            resp = self._session.get(url, params=params, timeout=timeout, stream=stream)
+        return resp
 
     def refresh_auth(self) -> None:
         if self._refresh_token:
@@ -143,13 +174,10 @@ Assinantes podem informar e-mail/senha para login automático.""".strip()
         super().refresh_auth()
 
     def fetch_courses(self) -> List[Dict[str, Any]]:
-        if not self._session:
-            raise ConnectionError("Sessão não autenticada.")
+        resp = self._get_with_refresh(f"{BFF_WEB_URL}/api/v1/payer/products", timeout=30)
 
-        resp = self._session.get(f"{BFF_WEB_URL}/api/v1/payer/products", timeout=30)
-
-        if resp.status_code == 401:
-            raise ConnectionError("Token inválido (401).")
+        if resp.status_code in (401, 403):
+            raise ConnectionError(f"Token inválido ({resp.status_code}).")
 
         resp.raise_for_status()
         data = resp.json()
@@ -203,7 +231,7 @@ Assinantes podem informar e-mail/senha para login automático.""".strip()
         page_size = 50
 
         while True:
-            resp = self._session.get(
+            resp = self._get_with_refresh(
                 f"{BFF_MEMBERS_URL}/api/v1/hub/sections/v2",
                 params={
                     "productId": product_id,
@@ -251,7 +279,7 @@ Assinantes podem informar e-mail/senha para login automático.""".strip()
             raise ConnectionError("Sessão não autenticada.")
 
         post_id = lesson.get("id")
-        resp = self._session.get(
+        resp = self._get_with_refresh(
             f"{BFF_MEMBERS_URL}/api/v1/hub/posts/{post_id}",
             timeout=30,
         )
@@ -260,14 +288,18 @@ Assinantes podem informar e-mail/senha para login automático.""".strip()
 
         content = LessonContent()
 
+        body = data.get("body") if isinstance(data.get("body"), dict) else None
+        blocks = body.get("blocks", []) if body else []
+
         html_content = data.get("content") or ""
-        if not html_content:
-            body = data.get("body")
-            if body and isinstance(body, dict):
-                html_content = self._blocks_to_html(body.get("blocks", []))
+        if not html_content and blocks:
+            html_content = self._blocks_to_html(blocks)
 
         if html_content:
             content.description = Description(text=html_content, description_type="html")
+
+        lesson_title = data.get("title", "")
+        lesson_order = data.get("order", 1)
 
         cover = data.get("cover")
         if cover and cover.get("type") == "video":
@@ -275,10 +307,29 @@ Assinantes podem informar e-mail/senha para login automático.""".strip()
             content.videos.append(Video(
                 video_id=cover.get("id", ""),
                 url=cover.get("url", ""),
-                title=data.get("title", ""),
-                order=data.get("order", 1),
+                title=lesson_title,
+                order=lesson_order,
                 size=metadata.get("size", 0),
                 duration=int(metadata.get("duration", 0)),
+                extra_props={"referer": "https://app.hub.la/"},
+            ))
+
+        for block_idx, block in enumerate(blocks, 1):
+            if block.get("type") != "custom_video":
+                continue
+            props = block.get("props", {}) or {}
+            video_url = props.get("url") or ""
+            if not video_url:
+                continue
+            match = _YOUTUBE_ID_RE.search(video_url)
+            video_id = match.group(1) if match else block.get("id", "")
+            content.videos.append(Video(
+                video_id=video_id,
+                url=video_url,
+                title=lesson_title,
+                order=lesson_order * 100 + block_idx,
+                size=0,
+                duration=0,
                 extra_props={"referer": "https://app.hub.la/"},
             ))
 
@@ -300,6 +351,8 @@ Assinantes podem informar e-mail/senha para login automático.""".strip()
         parts: List[str] = []
         for block in blocks:
             block_type = block.get("type", "")
+            if block_type == "custom_video":
+                continue
             texts = []
             for item in block.get("content", []):
                 if isinstance(item, dict):
