@@ -22,6 +22,10 @@ LOGIN_URL = f"{API_BASE}/member/login"
 HOME_URL = f"{API_BASE}/home"
 COURSE_WATCH_URL = f"{API_BASE}/course/{{course_id}}/watch"
 LESSON_URL = f"{API_BASE}/course/{{course_id}}/module/{{module_id}}/lesson/{{lesson_id}}"
+ATTACHMENT_DOWNLOAD_URL = (
+    f"{API_BASE}/course/{{course_id}}/module/{{module_id}}"
+    f"/lesson/{{lesson_id}}/attachment/{{attachment_id}}/download"
+)
 
 TARGET_ENDPOINTS = [
     f"{API_BASE}/home",
@@ -347,14 +351,32 @@ A pagina de login tem reCAPTCHA — o navegador abrira para voce resolver.
             )
 
         attachments_data = lesson.get("attachments_data", [])
+        lesson_id = lesson.get("id")
+        mod_id = lesson.get("module_id") or module_id
         for idx, att in enumerate(attachments_data, start=1):
-            att_url = att.get("cdn_url") or att.get("path", "")
+            att_id = att.get("id")
             filename = att.get("title", f"Anexo {idx}")
             extension = filename.rsplit(".", 1)[-1] if "." in filename else ""
 
+            # Greenn exposes a `cdn_url` pointing straight at a DigitalOcean Space
+            # (e.g. https://nyc3.digitaloceanspaces.com/club.greenn/...), but hitting
+            # it with our session fails: the session carries the Greenn Authorization
+            # header, which the S3-compatible Space rejects as a malformed signature.
+            # The members area instead downloads through this authenticated endpoint,
+            # which streams the file directly (with a proper Content-Disposition).
+            if att_id is not None and lesson_id is not None and mod_id is not None:
+                att_url = ATTACHMENT_DOWNLOAD_URL.format(
+                    course_id=course_id,
+                    module_id=mod_id,
+                    lesson_id=lesson_id,
+                    attachment_id=att_id,
+                )
+            else:
+                att_url = att.get("cdn_url") or att.get("path", "")
+
             content.attachments.append(
                 Attachment(
-                    attachment_id=str(att.get("id", idx)),
+                    attachment_id=str(att_id if att_id is not None else idx),
                     url=att_url,
                     filename=filename,
                     order=idx,
