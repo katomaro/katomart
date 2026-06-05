@@ -29,12 +29,7 @@ VIDEOTECA_HLS_URL = "https://cy0sg6qy8j.map.azionedge.net/neaf/{identifier}/mast
 
 
 class NeafConcursosPlatform(BasePlatform):
-    """Implements the NEAF Concursos (www.neafconcursos.com.br) platform.
-
-    Backend is a Django site: login is form-based with a CSRF token, course
-    pages are server-rendered HTML, and videos are hosted on Videoteca EAD
-    (HLS via Azion CDN).
-    """
+    """Implements the NEAF Concursos (www.neafconcursos.com.br) platform."""
 
     def __init__(self, api_service: ApiService, settings_manager: SettingsManager) -> None:
         super().__init__(api_service, settings_manager)
@@ -251,73 +246,130 @@ Para usuários gratuitos (cookie de sessão):
 
         lessons: List[Dict[str, Any]] = []
 
-        for block in soup.find_all("div", class_=re.compile(r"aulas-conteudo")):
-            collapse = block.find(id=re.compile(r"^collapse(\d+)$"))
-            if not collapse:
-                continue
+        for collapse in soup.find_all("div", id=re.compile(r"^collapse(\d+)$")):
             match = re.match(r"^collapse(\d+)$", collapse.get("id", ""))
             if not match:
                 continue
+            
             lesson_id = match.group(1)
-
             lesson_title = ""
-            header_h2 = block.find("h2")
-            if header_h2:
-                lesson_title = header_h2.get_text(strip=True)
+
+            # 1. Tentativa pelo ID de cabeçalho padrão
+            heading_el = soup.find(id=f"heading{lesson_id}")
+            if heading_el:
+                lesson_title = heading_el.get_text(separator=" ", strip=True)
+
+            # 2. Tentativa por âncoras/botões que apontam para o collapse
             if not lesson_title:
-                for anchor in block.find_all("a", class_="titulo-aula"):
-                    text = anchor.get_text(strip=True)
-                    if text:
-                        lesson_title = text
+                trigger = soup.find(attrs={"href": re.compile(rf"#collapse{lesson_id}$")})
+                if trigger:
+                    lesson_title = trigger.get_text(separator=" ", strip=True)
+                    
+            if not lesson_title:
+                trigger = soup.find(attrs={"data-target": re.compile(rf"#collapse{lesson_id}$")})
+                if trigger:
+                    lesson_title = trigger.get_text(separator=" ", strip=True)
+
+            if not lesson_title:
+                trigger = soup.find(attrs={"aria-controls": f"collapse{lesson_id}"})
+                if trigger:
+                    lesson_title = trigger.get_text(separator=" ", strip=True)
+
+            # 3. O "Plano C": Pegar o primeiro parágrafo interno se os outros falharem
+            if not lesson_title:
+                first_p = collapse.find("p")
+                if first_p and first_p.get_text(strip=True):
+                    lesson_title = first_p.get_text(separator=" ", strip=True)
+
+            # --- LIMPEZA AVANÇADA E COMPLETA DO NOME DA AULA ---
+            if lesson_title:
+                lesson_title = re.sub(r"[\n\r\t]+", " ", lesson_title)
+                
+                # Executa uma limpeza em loop para remover múltiplos prefixos acumulados
+                while True:
+                    old_title = lesson_title
+                    # Remove termos estruturais do site (independente de maiúsculas/minúsculas)
+                    lesson_title = re.sub(
+                        r"(?i)^(baixe[\s\w]*material|material[\s\w]*apoio|aula\s*\d+|bloco\s*\d+|parte\s*\d+)", 
+                        "", 
+                        lesson_title
+                    ).strip()
+                    # Remove pontuações e símbolos que restarem pendentes no início do texto
+                    lesson_title = re.sub(r"^[\s\-\|:\.]+", "", lesson_title).strip()
+                    
+                    # Se o texto parar de mudar, significa que está 100% limpo
+                    if lesson_title == old_title:
                         break
-            if not lesson_title:
+                
+                # Consolida múltiplos espaços em branco internos
+                lesson_title = re.sub(r"\s+", " ", lesson_title).strip()
+
+            if not lesson_title or lesson_title == "" or lesson_title == "_":
                 lesson_title = f"Aula {lesson_id}"
 
             videos: List[Dict[str, Any]] = []
             attachments: List[Dict[str, Any]] = []
 
             for row in collapse.find_all("tr"):
+                # --- EXTRAÇÃO DOS VÍDEOS ---
                 btn = row.find("button", id=re.compile(r"^btn_kmodal-(\d+)$"))
                 if btn:
                     vmatch = re.match(r"^btn_kmodal-(\d+)$", btn.get("id", ""))
                     if vmatch:
                         video_id = vmatch.group(1)
                         title_p = row.find("p")
-                        part_title = title_p.get_text(strip=True) if title_p else lesson_title
-                        videos.append(
-                            {
-                                "video_id": video_id,
-                                "title": part_title,
-                                "order": len(videos) + 1,
-                            }
-                        )
+                        
+                        part_title = ""
+                        if title_p and title_p.get_text(strip=True):
+                            part_title = title_p.get_text(separator=" ", strip=True)
+                        else:
+                            part_title = lesson_title
+                            
+                        videos.append({
+                            "video_id": video_id,
+                            "title": part_title,
+                            "order": len(videos) + 1,
+                        })
 
+                # --- EXTRAÇÃO DOS ANEXOS ---
                 materials_td = row.find("td", class_="materiais")
                 if materials_td:
                     for anchor in materials_td.find_all("a", href=True):
                         href = anchor.get("href", "").strip()
                         if not href:
                             continue
-                        filename = anchor.get("title") or href.rsplit("/", 1)[-1]
-                        attachments.append(
-                            {
-                                "id": f"{lesson_id}-mat-{len(attachments) + 1}",
-                                "url": href,
-                                "filename": filename,
-                                "order": len(attachments) + 1,
-                            }
-                        )
+                        
+                        filename = anchor.get("title")
+                        if not filename:
+                            filename = anchor.get_text(strip=True)
+                        if not filename:
+                            filename = href.split("?")[0].rsplit("/", 1)[-1]
+                            
+                        filename = filename.strip().replace('\r', '').replace('\n', '')
+                        
+                        url_filename = href.split("?")[0].rsplit("/", 1)[-1]
+                        file_ext = ""
+                        if "." in url_filename:
+                            file_ext = url_filename.rsplit(".", 1)[-1].lower()
+                            
+                        if file_ext and not filename.lower().endswith(f".{file_ext}"):
+                            filename = f"{filename}.{file_ext}"
 
-            lessons.append(
-                {
-                    "id": lesson_id,
-                    "title": lesson_title,
-                    "order": len(lessons) + 1,
-                    "locked": False,
-                    "_videos": videos,
-                    "_attachments": attachments,
-                }
-            )
+                        attachments.append({
+                            "id": f"{lesson_id}-mat-{len(attachments) + 1}",
+                            "url": href,
+                            "filename": filename,
+                            "order": len(attachments) + 1,
+                        })
+
+            lessons.append({
+                "id": lesson_id,
+                "title": lesson_title,
+                "order": len(lessons) + 1,
+                "locked": False,
+                "_videos": videos,
+                "_attachments": attachments,
+            })
 
         return lessons
 
@@ -410,6 +462,7 @@ Para usuários gratuitos (cookie de sessão):
                 attachment.url,
                 stream=True,
                 headers={"Referer": EAD_URL},
+                timeout=30,
             )
             resp.raise_for_status()
             with open(download_path, "wb") as fh:
