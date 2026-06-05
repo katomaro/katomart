@@ -1130,7 +1130,12 @@ class DownloadWorker(QRunnable):
                             else:
                                 for video_index, video in enumerate(lesson_details.videos, start=1):
                                     video_order = video.order or video_index
-                                    video_name = f"{video_order}. Aula"
+                                    if getattr(self.settings, "try_keep_original_video_name", False):
+                                        base_video_title = getattr(video, "title", "") or "Aula"
+                                        base_video_title = sanitize_path_component(base_video_title)
+                                        video_name = f"{video_order}. {base_video_title}"
+                                    else:
+                                        video_name = f"{video_order}. Aula"
                                     video_name = truncate_filename_preserve_ext(video_name, getattr(self.settings, 'max_file_name_length', 30))
                                     video_path = lesson_path / video_name
                                     logging.info(f"Baixando Vídeo '{video_name}' para '{video_path}'")
