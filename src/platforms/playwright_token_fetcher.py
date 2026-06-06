@@ -203,9 +203,20 @@ class PlaywrightTokenFetcher(ABC):
                 predicate=lambda r: matches_target(r.url),
                 timeout=self.network_idle_timeout_ms,
             )
+            self._on_request_captured(request)
             return request.headers.get("authorization"), request.url
         except PlaywrightTimeoutError:
             return None, None
+
+    def _on_request_captured(self, request) -> None:  # pragma: no cover - UI dependent
+        """Hook for subclasses to harvest extra headers from the matched request.
+
+        Called with the first request whose URL matches ``target_endpoints``.
+        The default implementation is a no-op; platforms that need additional
+        headers (e.g. device/2FA tokens) override this and stash them on the
+        instance for the platform to read after ``fetch_token`` returns.
+        """
+        return None
 
     def _strip_bearer_prefix(self, header: str) -> str:
         prefix = "bearer "
