@@ -410,23 +410,40 @@ A pagina de login tem reCAPTCHA — o navegador abrira para voce resolver.
         if not self._session:
             raise ConnectionError("Sessao nao autenticada.")
 
-        try:
-            url = attachment.url
-            if not url:
-                logger.error("GreennClub: attachment has no URL: %s", attachment.filename)
-                return False
-
-            response = self._session.get(url, stream=True, timeout=120)
-            response.raise_for_status()
-
-            with open(download_path, "wb") as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    f.write(chunk)
-            return True
-
-        except Exception as exc:
-            logger.error("GreennClub: failed to download attachment %s: %s", attachment.filename, exc)
+        url = attachment.url
+        if not url:
+            logger.error("GreennClub: attachment has no URL: %s", attachment.filename)
             return False
+
+        # Let HTTP errors propagate so the worker can classify them, show the real
+        # status code and trigger auto re-auth on 401 (the authenticated
+        # /attachment/{id}/download endpoint returns 401 once the token expires).
+        response = self._session.get(url, stream=True, timeout=120)
+        response.raise_for_status()
+
+        # The endpoint streams the file directly. If we instead got JSON/HTML it
+        # is an error envelope (or an auth wall); saving it as a .pdf would yield a
+        # corrupt file, so fail loudly with the body to make the cause visible.
+        content_type = (response.headers.get("Content-Type") or "").lower()
+        if content_type.startswith(("application/json", "text/html")):
+            snippet = response.text[:300]
+            raise ConnectionError(
+                f"Greenn retornou '{content_type}' em vez do arquivo para "
+                f"'{attachment.filename}': {snippet}"
+            )
+
+        bytes_written = 0
+        with open(download_path, "wb") as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+                    bytes_written += len(chunk)
+
+        if bytes_written == 0:
+            raise ConnectionError(
+                f"Download vazio (0 bytes) para o anexo '{attachment.filename}'."
+            )
+        return True
 
 
 PlatformFactory.register_platform("Greenn Club", GreennClubPlatform)
