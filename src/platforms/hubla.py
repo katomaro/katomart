@@ -1,16 +1,14 @@
 from __future__ import annotations
 
+import html
 import logging
 import re
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
+from urllib.parse import parse_qs, urlparse
 
 import requests
-
-_YOUTUBE_ID_RE = re.compile(
-    r"(?:youtube\.com/(?:watch\?(?:.*&)?v=|embed/|shorts/|v/)|youtu\.be/)([A-Za-z0-9_-]{11})"
-)
 
 from src.app.api_service import ApiService
 from src.app.models import Attachment, Description, LessonContent, Video
@@ -26,6 +24,22 @@ FIREBASE_TOKEN_URL = "https://securetoken.googleapis.com/v1"
 BFF_WEB_URL = "https://backend-bff-web.platform.hub.la"
 BFF_MEMBERS_URL = "https://backend-bff-members-area.platform.hub.la"
 HUB_AUTH_URL = "https://hub.la/api/auth/get"
+
+YOUTUBE_URL_RE = re.compile(
+    r"https?://(?:www\.|m\.)?(?:youtube(?:-nocookie)?\.com|youtu\.be)/[^\s\"'<>]+",
+    re.IGNORECASE,
+)
+
+YOUTUBE_HOSTS = {
+    "youtube.com",
+    "www.youtube.com",
+    "m.youtube.com",
+    "music.youtube.com",
+    "youtube-nocookie.com",
+    "www.youtube-nocookie.com",
+    "youtu.be",
+    "www.youtu.be",
+}
 
 
 class HubLaPlatform(BasePlatform):
@@ -288,8 +302,8 @@ Assinantes podem informar e-mail/senha para login automático.""".strip()
 
         content = LessonContent()
 
-        body = data.get("body") if isinstance(data.get("body"), dict) else None
-        blocks = body.get("blocks", []) if body else []
+        body = data.get("body") if isinstance(data.get("body"), dict) else {}
+        blocks = body.get("blocks", []) if isinstance(body, dict) else []
 
         html_content = data.get("content") or ""
         if not html_content and blocks:
@@ -298,39 +312,48 @@ Assinantes podem informar e-mail/senha para login automático.""".strip()
         if html_content:
             content.description = Description(text=html_content, description_type="html")
 
-        lesson_title = data.get("title", "")
-        lesson_order = data.get("order", 1)
+        seen_video_urls: Set[str] = set()
 
         cover = data.get("cover")
         if cover and cover.get("type") == "video":
             metadata = cover.get("metadata", {})
+            cover_url = cover.get("url", "")
+            if cover_url:
+                seen_video_urls.add(cover_url)
             content.videos.append(Video(
                 video_id=cover.get("id", ""),
-                url=cover.get("url", ""),
-                title=lesson_title,
-                order=lesson_order,
+                url=cover_url,
+                title=data.get("title", ""),
+                order=data.get("order", 1),
                 size=metadata.get("size", 0),
                 duration=int(metadata.get("duration", 0)),
                 extra_props={"referer": "https://app.hub.la/"},
             ))
 
-        for block_idx, block in enumerate(blocks, 1):
-            if block.get("type") != "custom_video":
+        # Hub.la também pode guardar vídeos do YouTube dentro do corpo da aula
+        # como body.blocks[].type == "custom_video" com props.url.
+        # Importante: não varrer o JSON inteiro de `data`, porque a resposta
+        # também traz paginate.previous/paginate.next e isso adiciona vídeos
+        # de aulas vizinhas como se fossem da aula atual.
+        for yt_order, youtube_url in enumerate(self._extract_current_lesson_youtube_urls(data), 1):
+            normalized_url = self._normalize_youtube_url(youtube_url)
+            if not normalized_url or normalized_url in seen_video_urls:
                 continue
-            props = block.get("props", {}) or {}
-            video_url = props.get("url") or ""
-            if not video_url:
-                continue
-            match = _YOUTUBE_ID_RE.search(video_url)
-            video_id = match.group(1) if match else block.get("id", "")
+            seen_video_urls.add(normalized_url)
+
+            youtube_id = self._extract_youtube_video_id(normalized_url) or str(yt_order)
             content.videos.append(Video(
-                video_id=video_id,
-                url=video_url,
-                title=lesson_title,
-                order=lesson_order * 100 + block_idx,
+                video_id=f"youtube-{youtube_id}",
+                url=normalized_url,
+                title=data.get("title", ""),
+                order=int(data.get("order", 1) or 1) + yt_order - 1,
                 size=0,
                 duration=0,
-                extra_props={"referer": "https://app.hub.la/"},
+                extra_props={
+                    "referer": "https://app.hub.la/",
+                    "provider": "youtube",
+                    "download_method": "yt-dlp",
+                },
             ))
 
         for idx, att in enumerate(data.get("attachments", []), 1):
@@ -351,8 +374,13 @@ Assinantes podem informar e-mail/senha para login automático.""".strip()
         parts: List[str] = []
         for block in blocks:
             block_type = block.get("type", "")
-            if block_type == "custom_video":
+
+            if block_type in {"custom_video", "video", "embed"}:
+                # Não colocar o link do YouTube na descrição/html.
+                # O app também baixa "conteúdo linkado" encontrado na descrição;
+                # se deixarmos o URL aqui, o mesmo vídeo é baixado duas vezes.
                 continue
+
             texts = []
             for item in block.get("content", []):
                 if isinstance(item, dict):
@@ -362,14 +390,121 @@ Assinantes podem informar e-mail/senha para login automático.""".strip()
             text = "".join(texts)
             if not text:
                 continue
+            safe_text = html.escape(text)
             if block_type == "bulletListItem":
-                parts.append(f"<li>{text}</li>")
+                parts.append(f"<li>{safe_text}</li>")
             elif block_type == "heading":
                 level = block.get("props", {}).get("level", 2)
-                parts.append(f"<h{level}>{text}</h{level}>")
+                parts.append(f"<h{level}>{safe_text}</h{level}>")
             else:
-                parts.append(f"<p>{text}</p>")
+                parts.append(f"<p>{safe_text}</p>")
         return "\n".join(parts)
+
+    @classmethod
+    def _extract_current_lesson_youtube_urls(cls, data: Dict[str, Any]) -> List[str]:
+        """Extrai YouTube somente da aula atual, ignorando paginate.previous/next."""
+        candidates: List[Any] = []
+
+        body = data.get("body")
+        if isinstance(body, dict):
+            candidates.append(body.get("blocks", []))
+
+        content = data.get("content")
+        if isinstance(content, str) and content:
+            candidates.append(content)
+
+        # Alguns retornos podem guardar o player como cover da própria aula.
+        # Não inclui paginate, product ou qualquer aula vizinha.
+        cover = data.get("cover")
+        if isinstance(cover, dict):
+            candidates.append(cover)
+
+        urls: List[str] = []
+        seen: Set[str] = set()
+        for candidate in candidates:
+            for url in cls._extract_youtube_urls(candidate):
+                normalized = cls._normalize_youtube_url(url)
+                if normalized and normalized not in seen:
+                    seen.add(normalized)
+                    urls.append(normalized)
+        return urls
+
+    @classmethod
+    def _extract_youtube_urls(cls, value: Any) -> List[str]:
+        urls: List[str] = []
+        seen: Set[str] = set()
+
+        def add_url(raw_url: str) -> None:
+            cleaned = raw_url.strip().rstrip("),.;]")
+            if not cls._is_youtube_url(cleaned):
+                return
+            normalized = cls._normalize_youtube_url(cleaned)
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                urls.append(normalized)
+
+        def walk(node: Any) -> None:
+            if isinstance(node, dict):
+                for key, child in node.items():
+                    if isinstance(child, str):
+                        if key.lower() in {"url", "src", "href", "videourl", "embedurl"}:
+                            add_url(child)
+                        for match in YOUTUBE_URL_RE.findall(child):
+                            add_url(match)
+                    else:
+                        walk(child)
+            elif isinstance(node, list):
+                for item in node:
+                    walk(item)
+            elif isinstance(node, str):
+                for match in YOUTUBE_URL_RE.findall(node):
+                    add_url(match)
+
+        walk(value)
+        return urls
+
+    @staticmethod
+    def _is_youtube_url(url: str) -> bool:
+        if not url:
+            return False
+        try:
+            host = urlparse(url).netloc.lower()
+        except Exception:
+            return False
+        return host in YOUTUBE_HOSTS or host.endswith(".youtube.com") or host.endswith(".youtube-nocookie.com")
+
+    @staticmethod
+    def _extract_youtube_video_id(url: str) -> Optional[str]:
+        try:
+            parsed = urlparse(url)
+        except Exception:
+            return None
+
+        host = parsed.netloc.lower()
+        path_parts = [part for part in parsed.path.split("/") if part]
+
+        if host in {"youtu.be", "www.youtu.be"} and path_parts:
+            return path_parts[0]
+
+        query_video_id = parse_qs(parsed.query).get("v")
+        if query_video_id and query_video_id[0]:
+            return query_video_id[0]
+
+        if path_parts:
+            if path_parts[0] in {"embed", "shorts", "live", "v"} and len(path_parts) > 1:
+                return path_parts[1]
+            if len(path_parts[0]) == 11:
+                return path_parts[0]
+
+        match = re.search(r"(?:v=|/embed/|youtu\.be/|/shorts/|/live/)([A-Za-z0-9_-]{11})", url)
+        return match.group(1) if match else None
+
+    @classmethod
+    def _normalize_youtube_url(cls, url: str) -> str:
+        youtube_id = cls._extract_youtube_video_id(url)
+        if youtube_id:
+            return f"https://www.youtube.com/watch?v={youtube_id}"
+        return url.strip()
 
     def download_attachment(self, attachment: Attachment, download_path: Path, course_slug: str, course_id: str, module_id: str) -> bool:
         if not self._session:
