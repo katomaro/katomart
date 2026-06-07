@@ -1,9 +1,10 @@
 from __future__ import annotations
 import logging
 import re
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from urllib.parse import urljoin
+from urllib.parse import parse_qsl, urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -195,7 +196,8 @@ Para usuários gratuitos (apenas cookie de sessão):
             if not course_id:
                 continue
 
-            available_types = self._discover_module_types(str(course_id))
+            projeto = self._fetch_project_info(str(course_id))
+            available_types = self._available_module_types(projeto)
 
             disciplines: Dict[str, Dict[str, Any]] = {}
 
@@ -259,35 +261,83 @@ Para usuários gratuitos (apenas cookie de sessão):
                         }
                     )
 
+            modules = list(disciplines.values())
+
+            # Simulados (mock exams) are a separate content branch from the
+            # pedagogical modules above: GET_PRJ exposes them in OBJ_SIMULADO,
+            # and each one is opened via GET_SIMULADO to reveal its files. The
+            # availability flag lives inside OBJ_PROJETO, not at the top level.
+            obj_projeto = (projeto.get("OBJ_PROJETO") or [{}])[0]
+            if str(obj_projeto.get("IND_SIMULADOS_DISP", "0")) == "1":
+                sim_module = self._build_simulados_module(projeto, str(course_id))
+                if sim_module:
+                    modules.append(sim_module)
+
             course_with_modules = course.copy()
-            course_with_modules["modules"] = list(disciplines.values())
+            course_with_modules["modules"] = modules
             course_with_modules["title"] = course.get("name", "Missão")
             all_content[course_id] = course_with_modules
 
         return all_content
 
-    def _discover_module_types(self, course_id: str) -> List[str]:
+    def _fetch_project_info(self, course_id: str) -> Dict[str, Any]:
+        """GET_PRJ payload: access flags (OBJ_PROJETO) + simulados (OBJ_SIMULADO)."""
         try:
             resp = self._ajax_post(
                 MISSOES_URL,
                 {"IND_ACAO": "GET_PRJ", "ID_PRJ": course_id, "frmigm": "getPrj"},
             )
-            payload = resp.json()
+            return resp.json()
         except Exception as exc:
             logging.warning("Falha ao consultar GET_PRJ %s: %s", course_id, exc)
-            return list(MODULE_TYPES)
+            return {}
 
-        projeto = (payload.get("OBJ_PROJETO") or [{}])[0]
+    def _available_module_types(self, projeto: Dict[str, Any]) -> List[str]:
+        obj = (projeto.get("OBJ_PROJETO") or [{}])[0]
         types: List[str] = []
         for tpmod in MODULE_TYPES:
-            flag = projeto.get(f"IND_ACESSO_{tpmod}")
+            flag = obj.get(f"IND_ACESSO_{tpmod}")
             if flag is None or str(flag) != "0":
                 types.append(tpmod)
         return types or list(MODULE_TYPES)
 
+    def _build_simulados_module(
+        self, projeto: Dict[str, Any], course_id: str
+    ) -> Optional[Dict[str, Any]]:
+        lessons: List[Dict[str, Any]] = []
+        for sim in projeto.get("OBJ_SIMULADO", []):
+            num = sim.get("SIMULADO")
+            if not num:
+                continue
+            released = str(sim.get("STATUS", "1")) == "1"
+            lessons.append(
+                {
+                    "id": f"SIM-{num}",
+                    "title": sim.get("NOM_SIMULADO", f"Simulado {num}"),
+                    "order": len(lessons) + 1,
+                    "locked": not released,
+                    "_tpmod": "SIM",
+                    "_simulado": str(num),
+                    "_id_prj": course_id,
+                }
+            )
+        if not lessons:
+            return None
+        return {
+            "id": "SIM",
+            "title": "Simulados",
+            # Keep simulados after the pedagogical disciplines in the tree.
+            "order": 999,
+            "lessons": lessons,
+            "locked": False,
+        }
+
     def fetch_lesson_details(
         self, lesson: Dict[str, Any], course_slug: str, course_id: str, module_id: str
     ) -> LessonContent:
+        if lesson.get("_tpmod") == "SIM":
+            return self._fetch_simulado_details(lesson, course_id)
+
         content = LessonContent()
 
         link = lesson.get("_link") or ""
@@ -309,6 +359,79 @@ Para usuários gratuitos (apenas cookie de sessão):
         )
         return content
 
+    def _fetch_simulado_details(
+        self, lesson: Dict[str, Any], course_id: str
+    ) -> LessonContent:
+        content = LessonContent()
+
+        simulado = lesson.get("_simulado", "")
+        id_prj = str(lesson.get("_id_prj") or course_id)
+        if not simulado:
+            return content
+
+        try:
+            resp = self._ajax_post(
+                MISSOES_URL,
+                {
+                    "IND_ACAO": "GET_SIMULADO",
+                    "ID_PRJ": id_prj,
+                    "SIMULADO": simulado,
+                    "frmigm": "getAbrirSimulado",
+                },
+            )
+            payload = resp.json()
+        except Exception as exc:
+            logging.warning(
+                "Falha ao abrir simulado %s do projeto %s: %s", simulado, id_prj, exc
+            )
+            return content
+
+        order = 1
+        for row in payload.get("OBJ_ARQUIVOS", []):
+            tip = str(row.get("TIP_MOSTRAR", ""))
+            desc = row.get("DESCRICAO") or f"simulado_{simulado}_{order}"
+
+            if tip == "0":
+                # Simulado PDF — downloaded via POST downloadFile?f=<TXT_PATH>.
+                path = row.get("TXT_PATH") or ""
+                if not path:
+                    continue
+                content.attachments.append(
+                    Attachment(
+                        attachment_id=str(row.get("ID") or f"sim{simulado}-{order}"),
+                        url=f"downloadFile?f={path}",
+                        filename=self._ensure_pdf(desc),
+                        order=order,
+                        extension="pdf",
+                        size=0,
+                    )
+                )
+                order += 1
+            elif tip == "1":
+                # Gabarito — only downloadable when the button carries no
+                # blocking message (MSG_BTN empty); served by DownloadGabarito.
+                if (row.get("MSG_BTN") or "") != "":
+                    continue
+                content.attachments.append(
+                    Attachment(
+                        attachment_id=f"gab-{id_prj}-{simulado}",
+                        url=f"DownloadGabarito?ID_PRJ={id_prj}&SIMULADO={simulado}",
+                        filename=self._ensure_pdf(desc),
+                        order=order,
+                        extension="pdf",
+                        size=0,
+                    )
+                )
+                order += 1
+            # tip == "2" (gabarito comentado) opens a forum screen, not a file.
+
+        return content
+
+    @staticmethod
+    def _ensure_pdf(name: str) -> str:
+        name = name.strip() or "arquivo"
+        return name if name.lower().endswith(".pdf") else f"{name}.pdf"
+
     def download_attachment(
         self,
         attachment: Attachment,
@@ -325,24 +448,47 @@ Para usuários gratuitos (apenas cookie de sessão):
             logging.error("Anexo sem URL: %s", attachment.filename)
             return False
 
-        if link.startswith("http"):
-            full_url = link
-        else:
-            # The server returns a relative link (e.g. "downloadFile?a=CPED&f=...").
-            # In the browser this resolves against the page URL
-            # ".../sistema/MinhasMissoes" (no trailing slash), yielding
-            # ".../sistema/downloadFile?...". urljoin against MISSOES_URL without
-            # an added trailing slash reproduces that. Appending "/" here would
-            # treat "MinhasMissoes" as a directory and hit the MinhasMissoes
-            # controller instead, which returns an HTML page full of scripts.
-            full_url = urljoin(MISSOES_URL, link)
+        # The server returns relative links (e.g. "downloadFile?a=CPED&f=...").
+        # In the browser these resolve against the page URL
+        # ".../sistema/MinhasMissoes" (no trailing slash), yielding
+        # ".../sistema/downloadFile?...". urljoin against MISSOES_URL without an
+        # added trailing slash reproduces that. Appending "/" here would treat
+        # "MinhasMissoes" as a directory and hit the MinhasMissoes controller
+        # instead, which returns an HTML page full of scripts.
+        endpoint = urlparse(link).path.rsplit("/", 1)[-1].lower()
+        query = urlparse(link).query
 
         try:
-            resp = self._session.get(
-                full_url,
-                stream=True,
-                headers={"Referer": MISSOES_URL},
-            )
+            if endpoint == "downloadgabarito":
+                # Gabarito: POST DownloadGabarito?h=<ms> with ID_PRJ/SIMULADO,
+                # mirroring the form the page submits.
+                params = dict(parse_qsl(query))
+                action = urljoin(MISSOES_URL, f"DownloadGabarito?h={int(time.time() * 1000)}")
+                resp = self._session.post(
+                    action,
+                    data={
+                        "ID_PRJ": params.get("ID_PRJ", ""),
+                        "SIMULADO": params.get("SIMULADO", ""),
+                    },
+                    stream=True,
+                    headers={"Referer": MISSOES_URL},
+                )
+            elif endpoint == "downloadfile" and "a=cped" not in query.lower():
+                # Simulado PDF: the page POSTs (empty body) to downloadFile?f=...
+                # whereas pedagogical files (a=CPED) are fetched with GET below.
+                resp = self._session.post(
+                    urljoin(MISSOES_URL, link),
+                    data={},
+                    stream=True,
+                    headers={"Referer": MISSOES_URL},
+                )
+            else:
+                full_url = link if link.startswith("http") else urljoin(MISSOES_URL, link)
+                resp = self._session.get(
+                    full_url,
+                    stream=True,
+                    headers={"Referer": MISSOES_URL},
+                )
             resp.raise_for_status()
 
             content_type = resp.headers.get("Content-Type", "").lower()
@@ -352,7 +498,7 @@ Para usuários gratuitos (apenas cookie de sessão):
                     "sessão expirada ou URL incorreta: %s",
                     attachment.filename,
                     content_type,
-                    full_url,
+                    resp.url,
                 )
                 return False
 
