@@ -4,7 +4,7 @@ import logging
 import re
 import time
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 from typing import Any, Dict, List, Optional
 
 import requests
@@ -13,35 +13,77 @@ from playwright.async_api import Page
 from src.app.api_service import ApiService
 from src.app.models import Attachment, Description, LessonContent, Video
 from src.config.settings_manager import SettingsManager
-from src.platforms.base import AuthField, AuthFieldType, BasePlatform, PlatformFactory
+from src.platforms.base import AuthField, AuthFieldType, BasePlatform, PlatformFactory, sanitize_token
 from src.platforms.playwright_token_fetcher import PlaywrightTokenFetcher
 
 logger = logging.getLogger(__name__)
 
-LOGIN_URL = "https://admin-api.kiwify.com.br/v1/handleAuth/login"
+# Kiwify has two API hosts in production: the legacy ".com.br" used by older
+# courses (version "v2", listing via /courses/{id}/sections) and ".com", used by
+# the newer premium members area / clubs (version "v3", listing via
+# /clubs/{clubId}/content). The course listing reports the version per course.
+API_BASE = "https://admin-api.kiwify.com.br"
+API_BASE_V3 = "https://admin-api.kiwify.com"
+
+LOGIN_URL = f"{API_BASE}/v1/handleAuth/login"
 KIWIFY_LOGIN_PAGE = "https://admin.kiwify.com.br/login"
-PLAYWRIGHT_KIWIFY_LOGIN_URL= "https://dashboard.kiwify.com.br/login?redirect=%2F"
-COURSES_URL = "https://admin-api.kiwify.com.br/v1/viewer/schools/courses"
-SCHOOL_COURSES_URL = "https://admin-api.kiwify.com.br/v1/viewer/schools/{school_id}/courses"
-COURSE_DETAILS_URLS = [
-    "https://admin-api.kiwify.com/v1/viewer/clubs/{course_id}/content?caipirinha=true",
-    "https://admin-api.kiwify.com.br/v1/viewer/courses/{course_id}",
-]
-LESSON_DETAILS_URL = "https://admin-api.kiwify.com/v1/viewer/courses/{course_id}/lesson/{lesson_id}"
-FILES_URL = "https://admin-api.kiwify.com.br/v1/viewer/courses/{course_id}/files/{file_id}"
+PLAYWRIGHT_KIWIFY_LOGIN_URL= "https://dashboard.kiwify.com/login?redirect=%2F"
+COURSES_URL = f"{API_BASE}/v1/viewer/schools/courses"
+SCHOOL_COURSES_URL = f"{API_BASE}/v1/viewer/schools/{{school_id}}/courses"
+
+
+def _course_detail_urls(course_id: str, version: Optional[str] = None) -> List[str]:
+    """Returns the candidate course-detail URLs to try, ordered by likelihood
+    for the given course ``version``. v3 (clubs) endpoints live on ``.com``; the
+    legacy ``.com.br`` endpoints come first for everything else. Every candidate
+    is included as a fallback so an unknown/missing version still resolves."""
+    legacy = [
+        f"{API_BASE}/v1/viewer/courses/{course_id}/sections",
+        f"{API_BASE}/v1/viewer/courses/{course_id}",
+        f"{API_BASE}/v1/viewer/clubs/{course_id}/content?caipirinha=true",
+    ]
+    clubs_v3 = [
+        f"{API_BASE_V3}/v1/viewer/clubs/{course_id}/content?caipirinha=true",
+        f"{API_BASE_V3}/v1/viewer/courses/{course_id}/sections",
+        f"{API_BASE_V3}/v1/viewer/courses/{course_id}",
+    ]
+    if str(version) == "v3":
+        return clubs_v3 + legacy
+    return legacy + clubs_v3
+
+
+def _lesson_details_url(api_host: str, course_id: str, lesson_id: str) -> str:
+    return f"{api_host}/v1/viewer/courses/{course_id}/lesson/{lesson_id}"
+
+
+def _files_url(api_host: str, course_id: str, file_id: str) -> str:
+    return f"{api_host}/v1/viewer/courses/{course_id}/files/{file_id}"
 
 
 class KiwifyTokenFetcher(PlaywrightTokenFetcher):
     """Automates Kiwify login with a real browser to capture the bearer token."""
 
+    def __init__(self) -> None:
+        # Since 2026-06 Kiwify gates the API behind a per-device 2FA token sent
+        # as the ``kiwi-device-token`` header on every authenticated request.
+        # It is harvested from the first captured viewer request (see
+        # ``_on_request_captured``) and read back by the platform.
+        self.device_token: Optional[str] = None
+
     @property
     def login_url(self) -> str:
         return PLAYWRIGHT_KIWIFY_LOGIN_URL
 
+    def _on_request_captured(self, request) -> None:  # pragma: no cover - UI dependent
+        device_token = request.headers.get("kiwi-device-token")
+        if device_token:
+            self.device_token = device_token
+
     @property
     def target_endpoints(self) -> list[str]:
         return [
-            "https://admin-api.kiwify.com.br/v1/viewer/",
+            f"{API_BASE}/v1/viewer/",
+            f"{API_BASE_V3}/v1/viewer/",
             COURSES_URL,
         ]
 
@@ -85,28 +127,54 @@ class KiwifyPlatform(BasePlatform):
     def __init__(self, api_service: ApiService, settings_manager: SettingsManager):
         super().__init__(api_service, settings_manager)
         self._token_fetcher = KiwifyTokenFetcher()
+        # Maps the course id reported by the listing (the clubId for v3) to the
+        # API host whose endpoint actually served its content. Used so attachment
+        # downloads hit the right host. Populated during fetch_course_content.
+        self._course_api_host: Dict[str, str] = {}
+        # Maps an attachment id to (api_host, real_course_id) so the FILES_URL
+        # fallback works for v3, where the lesson's course differs from the club.
+        self._attachment_meta: Dict[str, tuple[str, str]] = {}
 
     @classmethod
     def auth_fields(cls) -> List[AuthField]:
-        return []
+        return [
+            AuthField(
+                name="kiwi_device_token",
+                label="Device Token (kiwi-device-token)",
+                field_type=AuthFieldType.TEXT,
+                placeholder="Opcional: cole o valor do cabeçalho kiwi-device-token",
+                required=False,
+            ),
+        ]
 
     @classmethod
     def auth_instructions(cls) -> str:
         return """
-Assinantes (R$ 9.90) ativos podem informar usuário/senha. O sistema irá trocar essas credenciais automaticamente pelo token da etapa acima, além de usar alguns algoritmos melhores e ter funcionalidades extras na aplicação, e obter suporte prioritário.
+Assinantes (R$ 9.90) ativos podem informar usuário/senha. O sistema irá trocar essas credenciais automaticamente pelo token da etapa acima (use a emulação de navegador, pois a Kiwify agora exige 2FA por código + reCAPTCHA no login), além de usar alguns algoritmos melhores e ter funcionalidades extras na aplicação, e obter suporte prioritário.
 
 Para usuários gratuitos: Como obter o token da Kiwify?:
-1) Acesse https://admin.kiwify.com.br em seu navegador e faça login normalmente.
+1) Acesse https://dashboard.kiwify.com em seu navegador e faça login normalmente.
 2) Abra o DevTools (F12) e vá para a aba Rede (Network).
 3) Recarregue a página e procure por requisições para "admin-api.kiwify.com".
-4) Abra uma requisição autenticada e copie o valor do cabeçalho Authorization (Bearer ...).
-5) Cole apenas o token acima no campo de token
+4) Abra uma requisição autenticada e copie o valor do cabeçalho Authorization (Bearer ...) no campo de token.
+5) Na MESMA requisição, copie o valor do cabeçalho "kiwi-device-token" e cole no campo Device Token (a Kiwify passou a exigir esse cabeçalho em todas as chamadas autenticadas).
 """.strip()
 
     def authenticate(self, credentials: Dict[str, Any]) -> None:
         self.credentials = credentials
         token = self.resolve_access_token(credentials, self._exchange_credentials_for_token)
-        self._configure_session(token)
+        device_token = self._resolve_device_token(credentials)
+        self._configure_session(token, device_token)
+
+    def _resolve_device_token(self, credentials: Dict[str, Any]) -> Optional[str]:
+        """Prefer the token captured during browser login; fall back to a
+        manually-supplied one. Returns None when unavailable (the session is
+        still configured, just without the header)."""
+        captured = getattr(self._token_fetcher, "device_token", None)
+        if captured:
+            return captured
+        manual = sanitize_token((credentials.get("kiwi_device_token") or "").strip())
+        return manual or None
 
     def _exchange_credentials_for_token(self, username: str, password: str, credentials: Dict[str, Any]) -> str:
         use_browser_emulation = bool(credentials.get("browser_emulation"))
@@ -142,25 +210,30 @@ Para usuários gratuitos: Como obter o token da Kiwify?:
         except Exception as exc:  # pragma: no cover - network dependent
             raise ConnectionError("Falha ao autenticar na Kiwify. Verifique as credenciais.") from exc
 
-    def _configure_session(self, token: str) -> None:
+    def _configure_session(self, token: str, device_token: Optional[str] = None) -> None:
         self._session = requests.Session()
-        self._session.headers.update(
-            {
-                "Authorization": f"Bearer {token}",
-                "User-Agent": self._settings.user_agent,
-                'User-Agent': 'Mozilla/5.0 ...',
-                'Accept': 'application/json, text/plain, */*',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Accept-Encoding': 'gzip, deflate, br',
-                'Connection': 'keep-alive',
-                'Sec-Fetch-Dest': 'empty',
-                'Sec-Fetch-Mode': 'cors',
-                'Sec-Fetch-Site': 'same-site',
-                "Accept": "application/json, text/plain, */*",
-                "Origin": "https://admin.kiwify.com.br",
-                "Referer": "https://admin.kiwify.com.br/",
-            }
-        )
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "User-Agent": self._settings.user_agent,
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-site",
+            "Origin": "https://dashboard.kiwify.com",
+            "Referer": "https://dashboard.kiwify.com/",
+        }
+        if device_token:
+            # Required since 2026-06 on every authenticated admin-api request.
+            headers["kiwi-device-token"] = device_token
+        else:
+            logger.warning(
+                "Kiwify: sem kiwi-device-token; a API pode rejeitar as requisições. "
+                "Use a emulação de navegador ou informe o Device Token manualmente."
+            )
+        self._session.headers.update(headers)
 
     def get_session(self) -> Optional[requests.Session]:
         return self._session
@@ -213,6 +286,7 @@ Para usuários gratuitos: Como obter o token da Kiwify?:
                             "name": course.get("name", "Curso"),
                             "seller_name": course.get("producer", {}).get("name", "Produtor"),
                             "slug": str(course.get("id", "")),
+                            "version": course.get("version"),
                         }
                     )
             else:
@@ -241,6 +315,7 @@ Para usuários gratuitos: Como obter o token da Kiwify?:
                                 "seller_name": producer_name,
                                 "slug": str(course_info.get("id", "")),
                                 "is_school": False,
+                                "version": course_info.get("version"),
                             }
                         )
 
@@ -266,8 +341,9 @@ Para usuários gratuitos: Como obter o token da Kiwify?:
                 continue
 
             logger.debug("Kiwify: buscando detalhes do curso %s", course_id)
-            details = self._get_course_details(str(course_id))
-            logger.debug("Kiwify course %s details payload: %s", course_id, details)
+            details, api_host = self._get_course_details(str(course_id), course.get("version"))
+            self._course_api_host[str(course_id)] = api_host
+            logger.debug("Kiwify course %s details payload (host=%s): %s", course_id, api_host, details)
             logger.debug("Kiwify: detalhes crus do curso %s (tipo=%s): %r", course_id, type(details), details)
 
             if not details:
@@ -282,7 +358,7 @@ Para usuários gratuitos: Como obter o token da Kiwify?:
                 modules_data,
             )
 
-            processed_modules = self._process_modules(modules_data, all_lessons)
+            processed_modules = self._process_modules(modules_data, all_lessons, api_host=api_host)
 
             course_entry = course.copy()
             course_entry["title"] = course.get("name", f"Curso {course_id}")
@@ -292,9 +368,12 @@ Para usuários gratuitos: Como obter o token da Kiwify?:
         return all_content
 
 
-    def _get_course_details(self, course_id: str) -> Dict[str, Any]:
-        for url_template in COURSE_DETAILS_URLS:
-            url = url_template.format(course_id=course_id)
+    def _get_course_details(self, course_id: str, version: Optional[str] = None) -> tuple[Dict[str, Any], str]:
+        """Returns ``(details, api_host)`` where ``api_host`` is the scheme+host
+        of the endpoint that served the content (so lesson/attachment requests
+        target the same host)."""
+        for url in _course_detail_urls(course_id, version):
+            api_host = self._api_host_of(url)
             try:
                 logger.debug("Kiwify: chamando detalhes do curso em %s", url)
                 response = self._session.get(url)
@@ -305,27 +384,77 @@ Para usuários gratuitos: Como obter o token da Kiwify?:
                 if isinstance(data, dict):
                     if "course" in data:
                         logger.debug("Kiwify: usando data['course'] para curso %s", course_id)
-                        return data["course"]
+                        return data["course"], api_host
                     if "data" in data:
                         logger.debug("Kiwify: usando data['data'] para curso %s", course_id)
-                        return data["data"]
+                        return data["data"], api_host
                     if "content" in data:
                         logger.debug("Kiwify: usando data['content'] para curso %s", course_id)
-                        return data["content"]
+                        return data["content"], api_host
                     if "modules" in data:
                         logger.debug("Kiwify: usando data completo (já tem 'modules') para curso %s", course_id)
-                        return data
+                        return data, api_host
             except Exception as exc:  # pragma: no cover - network dependent
                 logger.debug("Kiwify course detail fetch failed for %s: %s", url, exc)
                 continue
 
         logger.error("Falha ao obter detalhes do curso %s em todas as APIs conhecidas.", course_id)
-        return {}
+        return {}, (API_BASE_V3 if str(version) == "v3" else API_BASE)
+
+    @staticmethod
+    def _api_host_of(url: str) -> str:
+        parsed = urlparse(url)
+        return f"{parsed.scheme}://{parsed.netloc}"
 
 
     def _extract_modules(self, course_details: Dict[str, Any]) -> tuple[Any, Dict[str, Any]]:
-        # course_details aqui é o data["data"] da resposta
-        all_lessons = course_details.get("all_lessons", {})  # <- mapa id -> aula
+        # course_details aqui é o data["course"] (ou data["data"], etc.)
+        all_lessons = course_details.get("all_lessons", {})  # <- mapa id -> aula (formato antigo)
+
+        # v3 (clubs/content): {all_courses, all_modules, all_lessons} as id->obj
+        # maps. A club may bundle several sub-courses; preserve their order via
+        # all_courses[*].modules and all_modules[*].lessons (no explicit order
+        # field exists). Each sub-course's id is what lesson/attachment requests
+        # need, so carry it on the module as ``_course_id``.
+        all_courses = course_details.get("all_courses")
+        all_modules_map = course_details.get("all_modules")
+        if isinstance(all_courses, dict) and all_courses and isinstance(all_modules_map, dict):
+            flattened: List[Dict[str, Any]] = []
+            multiple = len(all_courses) > 1
+            for course in all_courses.values():
+                if not isinstance(course, dict):
+                    continue
+                sub_course_id = course.get("id")
+                sub_course_name = course.get("name") or ""
+                for module_id in course.get("modules", []) or []:
+                    module = all_modules_map.get(str(module_id))
+                    if not isinstance(module, dict):
+                        continue
+                    module_copy = dict(module)
+                    module_copy["_course_id"] = sub_course_id
+                    if multiple and sub_course_name and sub_course_name != ".":
+                        module_copy["_section_name"] = sub_course_name
+                    flattened.append(module_copy)
+            return flattened, all_lessons
+
+        sections = course_details.get("sections")
+        if isinstance(sections, list) and sections:
+            flattened: List[Dict[str, Any]] = []
+            for section in sections:
+                if not isinstance(section, dict):
+                    continue
+                section_name = section.get("name") or ""
+                section_order = section.get("order", 0)
+                for module in section.get("modules", []) or []:
+                    if not isinstance(module, dict):
+                        continue
+                    module_copy = dict(module)
+                    if section_name and section_name != ".":
+                        module_copy["_section_name"] = section_name
+                        module_copy["_section_order"] = section_order
+                    flattened.append(module_copy)
+            return flattened, all_lessons
+
         if "modules" in course_details:
             modules = course_details["modules"]
         elif "all_modules" in course_details:
@@ -336,7 +465,12 @@ Para usuários gratuitos: Como obter o token da Kiwify?:
         return modules, all_lessons
 
 
-    def _process_modules(self, modules_data: Any, all_lessons: Dict[str, Any] | None = None) -> List[Dict[str, Any]]:
+    def _process_modules(
+        self,
+        modules_data: Any,
+        all_lessons: Dict[str, Any] | None = None,
+        api_host: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         modules: List[Dict[str, Any]] = []
 
         logger.debug(
@@ -383,15 +517,24 @@ Para usuários gratuitos: Como obter o token da Kiwify?:
                 lesson_id = lesson_obj.get("id")
                 lesson_title = self._extract_lesson_title(lesson_obj) or f"Aula {lesson_index}"
                 lesson_order = lesson_obj.get("order", lesson_index)
+                # The course that owns the lesson (sub-course for v3 clubs);
+                # falls back to the module's course. Used to build the lesson
+                # detail URL, since the listing id is the club, not the course.
+                lesson_course_id = lesson_obj.get("course_id")
+                if isinstance(module, dict):
+                    lesson_course_id = lesson_course_id or module.get("_course_id") or module.get("course_id")
 
-                lessons.append(
-                    {
-                        "id": lesson_id,
-                        "title": lesson_title,
-                        "order": lesson_order,
-                        "locked": False,
-                    }
-                )
+                lesson_entry = {
+                    "id": lesson_id,
+                    "title": lesson_title,
+                    "order": lesson_order,
+                    "locked": False,
+                }
+                if lesson_course_id:
+                    lesson_entry["_course_id"] = lesson_course_id
+                if api_host:
+                    lesson_entry["_api_host"] = api_host
+                lessons.append(lesson_entry)
 
             module_id = module.get("id") if isinstance(module, dict) else str(module_index)
             module_title_raw = module.get("name") if isinstance(module, dict) else None
@@ -399,6 +542,9 @@ Para usuários gratuitos: Como obter o token da Kiwify?:
                 module_title = f"Módulo {module_index}"
             else:
                 module_title = module_title_raw
+            section_name = module.get("_section_name") if isinstance(module, dict) else None
+            if section_name:
+                module_title = f"{section_name} - {module_title}"
             module_order = module.get("order", module_index) if isinstance(module, dict) else module_index
 
             logger.debug(
@@ -462,7 +608,12 @@ Para usuários gratuitos: Como obter o token da Kiwify?:
         if not lesson_id:
             raise ValueError("ID da aula não encontrado.")
 
-        url = LESSON_DETAILS_URL.format(course_id=course_id, lesson_id=lesson_id)
+        # v3 lessons carry their real (sub-)course id and API host; fall back to
+        # the listing course id / legacy host for v2.
+        api_host = lesson.get("_api_host") or self._course_api_host.get(str(course_id)) or API_BASE
+        real_course_id = lesson.get("_course_id") or course_id
+
+        url = _lesson_details_url(api_host, real_course_id, lesson_id)
         response = self._session.get(url)
         response.raise_for_status()
         lesson_json = response.json().get("lesson", {})
@@ -498,7 +649,7 @@ Para usuários gratuitos: Como obter o token da Kiwify?:
                     title=video_info.get("name", "Aula"),
                     size=video_info.get("size", 0),
                     duration=video_info.get("duration", 0),
-                    extra_props={"referer": f"https://dashboard.kiwify.com.br/course/{course_id}/{lesson_id}"}
+                    extra_props={"referer": f"https://dashboard.kiwify.com/course/{course_id}/{lesson_id}"}
                 )
             )
 
@@ -506,6 +657,9 @@ Para usuários gratuitos: Como obter o token da Kiwify?:
             filename = file_info.get("name") or f"file_{file_index}"
             attachment_id = str(file_info.get("id", file_index))
             extension = filename.split(".")[-1] if "." in filename else ""
+            # Remember which host/course resolves this attachment so the
+            # FILES_URL fallback in download_attachment targets the right API.
+            self._attachment_meta[attachment_id] = (api_host, str(real_course_id))
             content.attachments.append(
                 Attachment(
                     attachment_id=attachment_id,
@@ -605,7 +759,11 @@ Para usuários gratuitos: Como obter o token da Kiwify?:
 
             if not download_url and attachment.attachment_id:
                 logging.debug("Resolvendo URL do anexo %s via API.", attachment.filename)
-                api_url = FILES_URL.format(course_id=course_id, file_id=attachment.attachment_id)
+                api_host, real_course_id = self._attachment_meta.get(
+                    attachment.attachment_id,
+                    (self._course_api_host.get(str(course_id), API_BASE), course_id),
+                )
+                api_url = _files_url(api_host, real_course_id, attachment.attachment_id)
                 response = self._session.get(api_url, params={"forceDownload": "true"})
                 response.raise_for_status()
                 download_url = response.json().get("url", "")
