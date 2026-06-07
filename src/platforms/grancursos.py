@@ -23,7 +23,7 @@ SEARCH_COURSES_URL = f"{BASE_URL}/aluno/api/assinatura/buscar-cursos"
 LIST_DISCIPLINES_URL = f"{BASE_URL}/aluno/curso/listar-conteudo-aula/codigo/{{course_id}}/tipo/{{content_type}}"
 LIST_CONTENT_URL = f"{BASE_URL}/aluno/curso/listar-conteudo-aula/codigo/{{course_id}}/tipo/{{content_type}}/disciplina/{{discipline_id}}"
 LIST_LESSONS_URL = f"{BASE_URL}/aluno/curso/listar-conteudo-aula/codigo/{{course_id}}/tipo/{{content_type}}/disciplina/{{discipline_id}}/conteudo/{{content_id}}"
-VIDEO_INFO_URL = f"{BASE_URL}/aluno/sala-de-aula/video/co/{{course_id}}/a/{{video_id}}/c/{{contract_id}}"
+VIDEO_INFO_URL = f"{BASE_URL}/aluno/sala-de-aula/video/co/{{course_id}}/a/{{video_id}}"
 MATERIALS_URL = f"{BASE_URL}/aluno/sala-de-aula/get-materiais/co/{{course_id}}/a/{{video_id}}/t/video"
 AUDIO_URL = f"{BASE_URL}/aluno/espaco/download-audio/codigo/{{course_id}}/c/{{video_id}}"
 SLIDE_URL = f"{BASE_URL}/aluno/espaco/download-apostila/codigo/{{course_id}}/c/{{apostila_id}}"
@@ -466,16 +466,17 @@ Caso ele indique erros, perceba que o conteudo existe na pagina, eh apenas uma p
             logger.warning("Aula sem ID de vídeo: %s", lesson_title)
             return content
 
-        contract_id = self._get_contract_id()
         course_id_encoded = quote(course_id, safe="")
         video_id_encoded = quote(video_id, safe="")
-        contract_id_encoded = quote(contract_id, safe="")
 
-        # Fetch video info
+        # Fetch video info. The endpoint does NOT take a contract segment — the
+        # site calls /aluno/sala-de-aula/video/co/{course}/a/{video} directly,
+        # and the contract id is returned *inside* the response. Appending
+        # /c/{contract} makes the route 404, which previously aborted the whole
+        # lesson (no video AND no attachments).
         video_url = VIDEO_INFO_URL.format(
             course_id=course_id_encoded,
             video_id=video_id_encoded,
-            contract_id=contract_id_encoded
         )
 
         try:
@@ -631,12 +632,14 @@ Caso ele indique erros, perceba que o conteudo existe na pagina, eh apenas uma p
             "summary": ("Resumo", "md"),
             "transcript": ("Transcrição", "json"),
             "review": ("Revisão", "md"),
+            "mindmap": ("Mapa Mental", "md"),
             "quiz": ("Questões", "json"),
         }
         artefato_to_legacy = {
             "summary": "resumo",
             "transcript": "transcricao",
             "review": "mindmap",
+            "mindmap": "mindmap",
             "quiz": "questions",
         }
         handled_legacy_keys: set = set()
