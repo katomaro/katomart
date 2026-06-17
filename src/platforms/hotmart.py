@@ -13,6 +13,10 @@ from src.app.models import LessonContent, Description, AuxiliaryURL, Video, Atta
 from src.config.settings_manager import SettingsManager
 from src.app.api_service import ApiService
 
+INTEGRATION_SLUG = "hotmart"
+INTEGRATION_VERSION = "1.0.0"
+INTEGRATION_EXPERIMENTAL = False
+
 LOGIN_URL = (
     "https://sso.hotmart.com/login?passwordless=false&service="
     "https%3A%2F%2Fsso.hotmart.com%2Foauth2.0%2FcallbackAuthorize%3Fclient_id"
@@ -103,9 +107,10 @@ Para usuários gratuitos: Como obter o token da Hotmart?:
 1) Abra o seu navegador e vá para https://consumer.hotmart.com.
 2) Abra as Ferramentas de Desenvolvedor (F12) → aba Rede (também pode ser chamada de Requisições ou Network).
 3) Faça o login normalmente sem fechar essa aba e aguarde aparecer a lista de produtos da conta.
-4) Use a lupa para procurar a URL "https://api-hub.cb.hotmart.com/club-drive-api/rest/v1/".
-5) Clique nessa requisição que tenha o indicativo GET e vá para a aba Headers (Cabeçalhos), em requisição lá em baixo.
-6) Copie o valor do cabeçalho 'Authorization' — ele se parece com 'Bearer <token>'. Cole apenas a parte do token aqui.
+4) Use a lupa para procurar a URL "https://api-hub.cb.hotmart.com/club-drive-api/rest/".
+5) Selecione uma requisicao do tipo GET, geralmente possui um icone laranja dependendo do navegador, e clique nela.
+6) Nessa requisição que tenha o indicativo GET e vá para a aba Headers (Cabeçalhos), em requisição lá em baixo.
+7) Copie o valor do cabeçalho 'Authorization' — ele se parece com 'Bearer <token>'. Cole apenas a parte do token aqui.
 """.strip()
 
     def authenticate(self, credentials: Dict[str, Any]) -> None:
@@ -410,4 +415,5 @@ Para usuários gratuitos: Como obter o token da Hotmart?:
             all_content[course["id"]] = course_with_modules
         return all_content
 
+# PlatformFactory.register_platform("Hotmart", HotmartPlatform, slug=INTEGRATION_SLUG, version=INTEGRATION_VERSION, experimental=INTEGRATION_EXPERIMENTAL)
 PlatformFactory.register_platform("Hotmart", HotmartPlatform)
