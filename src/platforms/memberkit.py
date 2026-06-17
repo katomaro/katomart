@@ -15,6 +15,10 @@ from src.app.models import Attachment, Description, LessonContent, Video
 from src.config.settings_manager import SettingsManager
 from src.platforms.base import AuthField, AuthFieldType, BasePlatform, PlatformFactory
 
+INTEGRATION_SLUG = "memberkit"
+INTEGRATION_VERSION = "1.0.0"
+INTEGRATION_EXPERIMENTAL = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -299,7 +303,17 @@ Assinantes ativos podem informar usuario/senha para login automatico.
                 continue
 
             soup = BeautifulSoup(response.text, "html.parser")
+
+            # Old (pre-2026-06) layout rendered every module + lesson inline on
+            # the course page (div.section[id] > li[data-id]). Try that first.
             modules = self._parse_modules(soup, course_slug)
+
+            # New (2026-06+) layout: the course page only lists module/section
+            # *posters* in a grid; the lessons live on a separate per-section
+            # page (/{course}/sections/{id}-slug). Walk those when the inline
+            # parse came back empty.
+            if not modules:
+                modules = self._parse_modules_via_sections(soup, course_slug)
 
             # Some single-lesson courses redirect to the lesson page (0 modules).
             # Detect this by checking if the final URL is a lesson path.
@@ -395,6 +409,150 @@ Assinantes ativos podem informar usuario/senha para login automatico.
 
         logger.debug("MemberKit: parsed %d modules", len(modules))
         return modules
+
+    def _parse_modules_via_sections(
+        self, soup: BeautifulSoup, course_slug: str
+    ) -> List[Dict[str, Any]]:
+        """New (2026-06+) layout: course page lists section posters; each links
+        to a /{course}/sections/{id}-slug page that holds the actual lessons.
+
+        Requires one extra request per module, so it only runs when the inline
+        parse (``_parse_modules``) finds nothing.
+        """
+        cards = self._parse_section_cards(soup, course_slug)
+        modules: List[Dict[str, Any]] = []
+
+        for module_order, card in enumerate(cards, start=1):
+            section_slug = card["slug"]
+            section_url = f"{self._site_url}/{section_slug}"
+            logger.debug("MemberKit: fetching section page at %s", section_url)
+
+            try:
+                response = self._request_with_reauth(section_url, timeout=30)
+            except Exception as exc:
+                logger.error(
+                    "MemberKit: failed to fetch section %s: %s", card["id"], exc
+                )
+                continue
+
+            section_soup = BeautifulSoup(response.text, "html.parser")
+            lessons = self._parse_section_lessons(section_soup)
+
+            modules.append({
+                "id": card["id"],
+                "title": card["title"],
+                "order": module_order,
+                "lessons": lessons,
+                "locked": card.get("locked", False),
+            })
+
+            time.sleep(0.3)
+
+        logger.debug("MemberKit: parsed %d modules (via section pages)", len(modules))
+        return modules
+
+    def _parse_section_cards(
+        self, soup: BeautifulSoup, course_slug: str
+    ) -> List[Dict[str, Any]]:
+        """Extracts the module/section poster cards from the course page.
+
+        Each card is ``div[data-id]`` wrapping an anchor to the section page
+        (href contains ``/sections/``); the title sits in a ``<p>`` overlay.
+        """
+        cards: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+
+        for div in soup.select("div[data-id]"):
+            section_id = div.get("data-id", "")
+            if not section_id or section_id in seen:
+                continue
+
+            link = div.select_one("a[href*='/sections/']")
+            if not link:
+                continue
+
+            href = link.get("href", "")
+            # Same-site fully-qualified URLs → keep just the path.
+            if href.startswith("http"):
+                parsed_href = urlparse(href)
+                parsed_site = urlparse(self._site_url)
+                if parsed_href.hostname == parsed_site.hostname:
+                    href = parsed_href.path
+                else:
+                    continue
+            slug = href.lstrip("/")
+            if not slug:
+                continue
+
+            # Title: <p> overlay, then image alt, then slug tail.
+            title = ""
+            title_p = link.select_one("p")
+            if title_p:
+                title = title_p.get_text(strip=True)
+            if not title:
+                img = link.select_one("img[alt]")
+                if img:
+                    title = (img.get("alt") or "").strip()
+            if not title:
+                slug_tail = slug.rsplit("/", 1)[-1]
+                slug_tail = re.sub(r"^\d+-", "", slug_tail)
+                title = slug_tail.replace("-", " ").strip().title()
+            if not title:
+                title = f"Modulo {section_id}"
+
+            seen.add(section_id)
+            cards.append({
+                "id": section_id,
+                "title": title,
+                "slug": slug,
+                "locked": bool(div.select_one(".card__lock")),
+            })
+
+        return cards
+
+    def _parse_section_lessons(self, soup: BeautifulSoup) -> List[Dict[str, Any]]:
+        """Extracts the lessons listed on a section page (new 2026-06+ layout).
+
+        Lessons are ``div.sortable-item[data-id]`` rows; the title anchor
+        carries ``a.font-medium`` (a second, image-only anchor links the same
+        lesson) and the duration sits in ``span.text-muted-foreground``.
+        """
+        lessons: List[Dict[str, Any]] = []
+
+        items = soup.select("div.sortable-item[data-id]")
+        for lesson_order, item in enumerate(items, start=1):
+            lesson_id = item.get("data-id", "")
+            if not lesson_id:
+                continue
+
+            title_link = item.select_one("a.font-medium[href]")
+            if not title_link:
+                # Fallback: first anchor that carries visible text (skips the
+                # thumbnail anchor, which only wraps an <img>).
+                for anchor in item.select("a[href]"):
+                    if anchor.get_text(strip=True):
+                        title_link = anchor
+                        break
+
+            lesson_title = (
+                title_link.get_text(strip=True) if title_link else f"Aula {lesson_order}"
+            )
+            lesson_href = title_link.get("href", "") if title_link else ""
+            lesson_slug = lesson_href.lstrip("/") if lesson_href else ""
+
+            duration_span = item.select_one("span.text-muted-foreground")
+            duration_text = duration_span.get_text(strip=True) if duration_span else ""
+
+            lessons.append({
+                "id": lesson_id,
+                "title": lesson_title,
+                "order": lesson_order,
+                "slug": lesson_slug,
+                "duration_text": duration_text,
+                "locked": False,
+            })
+
+        return lessons
 
     def fetch_lesson_details(
         self,
@@ -654,4 +812,5 @@ Assinantes ativos podem informar usuario/senha para login automatico.
             return False
 
 
+# PlatformFactory.register_platform("MemberKit", MemberKitPlatform, slug=INTEGRATION_SLUG, version=INTEGRATION_VERSION, experimental=INTEGRATION_EXPERIMENTAL)
 PlatformFactory.register_platform("MemberKit", MemberKitPlatform)
