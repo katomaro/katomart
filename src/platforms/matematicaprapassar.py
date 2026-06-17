@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import base64
 import logging
 import re
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import unquote, urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -12,26 +14,57 @@ from bs4 import BeautifulSoup
 from src.app.api_service import ApiService
 from src.app.models import Attachment, Description, LessonContent, Video
 from src.config.settings_manager import SettingsManager
-from src.platforms.base import AuthField, AuthFieldType, BasePlatform, PlatformFactory
+from src.platforms.base import AuthField, BasePlatform, PlatformFactory
+
+INTEGRATION_SLUG = "matematicaprapassar"
+INTEGRATION_VERSION = "1.0.0"
+INTEGRATION_EXPERIMENTAL = False
 
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://www.matematicaprapassar.com.br"
+
+# URL hierarchy of the "sala virtual" (CakePHP). The path segments after the
+# action are base64-encoded ids, then URL-encoded (so "905" -> "OTA1",
+# "1" -> "MQ%3D%3D"). We keep the raw (still-encoded) segments to rebuild child
+# URLs verbatim, and decode them only for human-friendly ids.
+#   course disciplines: /sala-virtual/meu-curso/disciplinas/{enroll}/{course}/{slug}
+#   discipline lessons: /sala-virtual/meu-curso/disciplina/aulas/{enroll}/{course}/{module}/{slug}
+#   lesson player:      /sala-virtual/meu-curso/disciplina/aula/{enroll}/{course}/{module}/{lesson}
+DISCIPLINES_RE = re.compile(
+    r"/sala-virtual/meu-curso/disciplinas/([^/?\"'\s]+)/([^/?\"'\s]+)/([^/?\"'\s]+)"
+)
+AULAS_RE = re.compile(
+    r"/sala-virtual/meu-curso/disciplina/aulas/([^/?\"'\s]+)/([^/?\"'\s]+)/([^/?\"'\s]+)/([^/?\"'\s]+)"
+)
+AULA_RE = re.compile(
+    r"/sala-virtual/meu-curso/disciplina/aula/([^/?\"'\s]+)/([^/?\"'\s]+)/([^/?\"'\s]+)/([^/?\"'\s]+)"
+)
+
+
+def _decode_seg(seg: str) -> str:
+    """Decodes a URL-encoded + base64-encoded path segment to its plain id."""
+    raw = unquote(seg)
+    try:
+        decoded = base64.b64decode(raw).decode("utf-8", "ignore").strip()
+        if decoded:
+            return decoded
+    except Exception:
+        pass
+    return raw
 
 
 class MatematicaPraPassarPlatform(BasePlatform):
     """Implements the Matematica Pra Passar (matematicaprapassar.com.br) platform.
 
     CakePHP-based EAD platform with cookie-based auth (CAKEPHP session).
-    Content is server-side rendered HTML.
-    Videos are hosted on PandaVideo.
+    Content is server-side rendered HTML. Videos are hosted on PandaVideo.
 
-    URL hierarchy:
-      /sala-virtual/meus-cursos  (course listing)
-      /virtual_rooms/mycourses_plan/{b64}  (plan/mentoria course)
-      /virtual_rooms/courseplandisciplines/{id}/{slug}  (discipline/module)
-      /virtual_rooms/disciplineplanvideos/{id}/{id}/{slug}  (lesson listing)
-      /virtual_rooms/disciplineplanvideoplayer/{id}/{id}/{id}  (video player)
+    URL hierarchy (see module-level constants):
+      /sala-virtual/meus-cursos                                course listing
+      /sala-virtual/meu-curso/disciplinas/{e}/{c}/{slug}       disciplines (modules)
+      /sala-virtual/meu-curso/disciplina/aulas/{e}/{c}/{m}/..  lessons of a discipline
+      /sala-virtual/meu-curso/disciplina/aula/{e}/{c}/{m}/{l}  lesson player
     """
 
     def __init__(self, api_service: ApiService, settings_manager: SettingsManager):
@@ -72,7 +105,10 @@ Assinantes ativos podem informar usuario/senha para login automatico.""".strip()
 
         soup = BeautifulSoup(resp.text, "html.parser")
 
-        token_input = soup.find("input", {"name": "data[_Token][key]"})
+        # The login page renders several CakePHP forms, each with its own
+        # data[_Token][key]. Scope the CSRF token to the actual login form.
+        login_form = soup.find("form", action="/login")
+        token_input = login_form.find("input", {"name": "data[_Token][key]"}) if login_form else None
         if not token_input:
             raise ConnectionError("Nao foi possivel encontrar o token CSRF na pagina de login.")
         csrf_token = token_input.get("value", "")
@@ -130,7 +166,6 @@ Assinantes ativos podem informar usuario/senha para login automatico.""".strip()
     def get_session(self) -> Optional[requests.Session]:
         return self._session
 
-
     def fetch_courses(self) -> List[Dict[str, Any]]:
         if not self._session:
             raise ConnectionError("Sessao nao autenticada.")
@@ -142,47 +177,29 @@ Assinantes ativos podem informar usuario/senha para login automatico.""".strip()
         courses: Dict[str, Dict[str, Any]] = {}
 
         for card in soup.find_all("div", class_="course"):
-            title_el = card.find(class_="course-title")
-            title = title_el.get_text(strip=True) if title_el else ""
-
-            content_url = None
-            course_id = None
-
-            for link in card.find_all("a", href=True):
-                href = link.get("href", "")
-
-                m = re.search(
-                    r"/sala-virtual/meu-curso/disciplinas/([^/]+)/([^/]+)/([^/\"'\s]+)", href
-                )
-                if m:
-                    content_url = self._abs(href)
-                    course_id = m.group(2)
-                    break
-
-                m = re.search(r"/virtual_rooms/mycourses_plan/([^/\"'\s]+)", href)
-                if m:
-                    content_url = self._abs(href)
-                    course_id = m.group(1)
-                    break
-
-            if not content_url or not course_id:
+            link = card.find("a", href=DISCIPLINES_RE)
+            if not link:
                 continue
+            m = DISCIPLINES_RE.search(link.get("href", ""))
+            if not m:
+                continue
+
+            enroll_seg, course_seg, slug_seg = m.group(1), m.group(2), m.group(3)
+            course_id = _decode_seg(course_seg)
             if course_id in courses:
                 continue
 
+            title_el = card.find(class_="course-title")
+            title = title_el.get_text(strip=True) if title_el else ""
             if not title:
                 img = card.find("img", title=True)
                 title = img.get("title", "").strip() if img else ""
             if not title:
                 title = f"Curso {course_id}"
 
-            courses[course_id] = {
-                "id": course_id,
-                "name": title,
-                "slug": course_id,
-                "seller_name": "",
-                "extra": {"content_url": content_url},
-            }
+            courses[course_id] = self._build_course_entry(
+                course_id, title, enroll_seg, course_seg, slug_seg
+            )
 
         if not courses:
             courses = self._fallback_extract_courses(soup)
@@ -190,41 +207,40 @@ Assinantes ativos podem informar usuario/senha para login automatico.""".strip()
         logger.debug("MatematicaPraPassar: found %d courses", len(courses))
         return sorted(courses.values(), key=lambda c: c.get("name", ""))
 
+    def _build_course_entry(
+        self, course_id: str, title: str, enroll_seg: str, course_seg: str, slug_seg: str
+    ) -> Dict[str, Any]:
+        content_url = (
+            f"{BASE_URL}/sala-virtual/meu-curso/disciplinas/"
+            f"{enroll_seg}/{course_seg}/{slug_seg}"
+        )
+        return {
+            "id": course_id,
+            "name": title,
+            "slug": _decode_seg(slug_seg) or slug_seg,
+            "seller_name": "",
+            "extra": {
+                "content_url": content_url,
+                "enroll_seg": enroll_seg,
+                "course_seg": course_seg,
+                "slug_seg": slug_seg,
+            },
+        }
+
     def _fallback_extract_courses(self, soup: BeautifulSoup) -> Dict[str, Dict[str, Any]]:
         courses: Dict[str, Dict[str, Any]] = {}
-
-        for link in soup.find_all("a", href=True):
-            href = link.get("href", "")
-
-            m = re.search(
-                r"/sala-virtual/meu-curso/disciplinas/([^/]+)/([^/]+)/([^/\"'\s]+)", href
-            )
-            if m:
-                cid = m.group(2)
-                if cid not in courses:
-                    title = link.get_text(strip=True) or f"Curso {cid}"
-                    courses[cid] = {
-                        "id": cid,
-                        "name": title,
-                        "slug": cid,
-                        "seller_name": "",
-                        "extra": {"content_url": self._abs(href)},
-                    }
+        for link in soup.find_all("a", href=DISCIPLINES_RE):
+            m = DISCIPLINES_RE.search(link.get("href", ""))
+            if not m:
                 continue
-
-            m = re.search(r"/virtual_rooms/mycourses_plan/([^/\"'\s]+)", href)
-            if m:
-                cid = m.group(1)
-                if cid not in courses:
-                    title = link.get_text(strip=True) or f"Curso {cid}"
-                    courses[cid] = {
-                        "id": cid,
-                        "name": title,
-                        "slug": cid,
-                        "seller_name": "",
-                        "extra": {"content_url": self._abs(href)},
-                    }
-
+            enroll_seg, course_seg, slug_seg = m.group(1), m.group(2), m.group(3)
+            course_id = _decode_seg(course_seg)
+            if course_id in courses:
+                continue
+            title = link.get_text(strip=True) or f"Curso {course_id}"
+            courses[course_id] = self._build_course_entry(
+                course_id, title, enroll_seg, course_seg, slug_seg
+            )
         return courses
 
     def fetch_course_content(self, courses: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -235,7 +251,8 @@ Assinantes ativos podem informar usuario/senha para login automatico.""".strip()
 
         for course in courses:
             course_id = course.get("id")
-            content_url = course.get("extra", {}).get("content_url")
+            extra = course.get("extra", {})
+            content_url = extra.get("content_url")
             if not course_id or not content_url:
                 continue
 
@@ -245,15 +262,13 @@ Assinantes ativos podem informar usuario/senha para login automatico.""".strip()
                 resp = self._session.get(content_url, timeout=30, allow_redirects=True)
                 resp.raise_for_status()
                 html = resp.text
-
-                modules = self._resolve_page_modules(html)
-
+                modules = self._parse_disciplines(html)
             except Exception as exc:
                 logger.error("MatematicaPraPassar: failed to fetch course %s: %s", course_id, exc)
                 continue
 
             course_entry = course.copy()
-            course_entry["title"] = self._extract_page_title(html) or course.get("name", "Curso")
+            course_entry["title"] = course.get("name") or self._extract_page_title(html) or "Curso"
             course_entry["modules"] = modules
             all_content[str(course_id)] = course_entry
 
@@ -261,159 +276,77 @@ Assinantes ativos podem informar usuario/senha para login automatico.""".strip()
 
         return all_content
 
-    def _resolve_page_modules(self, html: str) -> List[Dict[str, Any]]:
+    def _parse_disciplines(self, html: str) -> List[Dict[str, Any]]:
         soup = BeautifulSoup(html, "html.parser")
-
-        # 1) Direct lesson links (disciplineplanvideoplayer) — e.g. player sidebar
-        modules = self._parse_videoplayer_links_as_modules(soup)
-        if modules:
-            return modules
-
-        # 2) disciplineplanvideos links — each becomes a module
-        modules = self._fetch_video_list_modules(soup)
-        if modules:
-            return modules
-
-        # 3) courseplandisciplines links — drill one level deeper
-        modules = self._fetch_discipline_modules(soup)
-        if modules:
-            return modules
-
-        return []
-
-    def _parse_videoplayer_links_as_modules(self, soup: BeautifulSoup) -> List[Dict[str, Any]]:
-        side_list = soup.find("ul", class_="videos-side-list")
-        search_root = side_list if side_list else soup
-
-        lessons = self._extract_videoplayer_lessons(search_root)
-        if not lessons:
-            return []
-
-        module_map: Dict[str, List[Dict[str, Any]]] = {}
-        for lesson in lessons:
-            mid = lesson.get("extra", {}).get("module_id", "1")
-            module_map.setdefault(mid, []).append(lesson)
-
         modules: List[Dict[str, Any]] = []
-        for idx, (mid, mod_lessons) in enumerate(module_map.items(), 1):
+        seen: set = set()
+
+        for disc in soup.find_all("div", class_="discipline"):
+            link = disc.find("a", href=AULAS_RE)
+            if not link:
+                continue
+            m = AULAS_RE.search(link.get("href", ""))
+            if not m:
+                continue
+
+            enroll_seg, course_seg, module_seg, slug_seg = m.groups()
+            module_key = module_seg
+            if module_key in seen:
+                continue
+            seen.add(module_key)
+
+            img = disc.find("img", title=True)
+            title = (img.get("title", "").strip() if img else "") or link.get_text(strip=True)
+            if not title:
+                title = _decode_seg(slug_seg) or f"Modulo {len(modules) + 1}"
+
+            order = len(modules) + 1
+            aulas_url = (
+                f"{BASE_URL}/sala-virtual/meu-curso/disciplina/aulas/"
+                f"{enroll_seg}/{course_seg}/{module_seg}/{slug_seg}"
+            )
+
+            try:
+                lessons = self._parse_lessons(aulas_url, enroll_seg, course_seg, module_seg)
+            except Exception as exc:
+                logger.warning("MatematicaPraPassar: error fetching discipline %s: %s", aulas_url, exc)
+                lessons = []
+
             modules.append({
-                "id": mid,
-                "title": f"Modulo {idx}",
-                "order": idx,
-                "lessons": mod_lessons,
+                "id": _decode_seg(module_seg),
+                "title": title,
+                "order": order,
+                "lessons": lessons,
                 "locked": False,
             })
-        return modules
-
-    def _fetch_video_list_modules(self, soup: BeautifulSoup) -> List[Dict[str, Any]]:
-        modules: List[Dict[str, Any]] = []
-        seen: set = set()
-
-        for link in soup.find_all("a", href=True):
-            href = link.get("href", "")
-            m = re.search(
-                r"/virtual_rooms/disciplineplanvideos/(\d+)/(\d+)/([^\"'\s]+)", href
-            )
-            if not m:
-                continue
-            key = f"{m.group(1)}/{m.group(2)}"
-            if key in seen:
-                continue
-            seen.add(key)
-
-            url = self._abs(href)
-            title = link.get_text(strip=True) or f"Modulo {len(modules) + 1}"
-
-            try:
-                resp = self._session.get(url, timeout=30, allow_redirects=True)
-                resp.raise_for_status()
-                sub_soup = BeautifulSoup(resp.text, "html.parser")
-                lessons = self._extract_videoplayer_lessons(sub_soup)
-                if lessons:
-                    modules.append({
-                        "id": m.group(2),
-                        "title": title,
-                        "order": len(modules) + 1,
-                        "lessons": lessons,
-                        "locked": False,
-                    })
-            except Exception as exc:
-                logger.warning("MatematicaPraPassar: error fetching video list %s: %s", url, exc)
-
             time.sleep(0.3)
 
         return modules
 
-    def _fetch_discipline_modules(self, soup: BeautifulSoup) -> List[Dict[str, Any]]:
-        modules: List[Dict[str, Any]] = []
-        seen: set = set()
-
-        for link in soup.find_all("a", href=True):
-            href = link.get("href", "")
-            m = re.search(
-                r"/virtual_rooms/courseplandisciplines/(\d+)/([^\"'\s]+)", href
-            )
-            if not m:
-                continue
-            disc_id = m.group(1)
-            if disc_id in seen:
-                continue
-            seen.add(disc_id)
-
-            url = self._abs(href)
-            title = link.get_text(strip=True) or f"Modulo {len(modules) + 1}"
-
-            try:
-                resp = self._session.get(url, timeout=30, allow_redirects=True)
-                resp.raise_for_status()
-                sub_soup = BeautifulSoup(resp.text, "html.parser")
-
-                sub_modules = self._fetch_video_list_modules(sub_soup)
-                if sub_modules:
-                    for sub_mod in sub_modules:
-                        sub_mod["title"] = f"{title} - {sub_mod['title']}"
-                        sub_mod["order"] = len(modules) + 1
-                        modules.append(sub_mod)
-                else:
-                    lessons = self._extract_videoplayer_lessons(sub_soup)
-                    if lessons:
-                        modules.append({
-                            "id": disc_id,
-                            "title": title,
-                            "order": len(modules) + 1,
-                            "lessons": lessons,
-                            "locked": False,
-                        })
-            except Exception as exc:
-                logger.warning("MatematicaPraPassar: error fetching discipline %s: %s", url, exc)
-
-            time.sleep(0.3)
-
-        return modules
-
-    def _extract_videoplayer_lessons(self, root: Any) -> List[Dict[str, Any]]:
-        side_list = root.find("ul", class_="videos-side-list")
-        search_root = side_list if side_list else root
+    def _parse_lessons(
+        self, aulas_url: str, enroll_seg: str, course_seg: str, module_seg: str
+    ) -> List[Dict[str, Any]]:
+        resp = self._session.get(aulas_url, timeout=30, allow_redirects=True)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
 
         lessons: List[Dict[str, Any]] = []
         seen: set = set()
 
-        for link in search_root.find_all("a", href=True):
-            href = link.get("href", "")
-            m = re.search(
-                r"/virtual_rooms/disciplineplanvideoplayer/(\d+)/(\d+)/(\d+)", href
-            )
+        for link in soup.find_all("a", href=AULA_RE):
+            m = AULA_RE.search(link.get("href", ""))
             if not m:
                 continue
-
-            lesson_id = m.group(3)
-            if lesson_id in seen:
+            lesson_seg = m.group(4)
+            if lesson_seg in seen:
                 continue
-            seen.add(lesson_id)
+            seen.add(lesson_seg)
 
-            title = link.get_text(strip=True)
-            if not title or len(title) < 2:
-                title = f"Aula {len(lessons) + 1}"
+            lesson_id = _decode_seg(lesson_seg)
+            title = link.get_text(strip=True) or f"Aula {len(lessons) + 1}"
+
+            row = link.find_parent("div", class_="row")
+            attachments = self._extract_row_attachments(row) if row else []
 
             lessons.append({
                 "id": lesson_id,
@@ -421,12 +354,47 @@ Assinantes ativos podem informar usuario/senha para login automatico.""".strip()
                 "order": len(lessons) + 1,
                 "locked": False,
                 "extra": {
-                    "course_id": m.group(1),
-                    "module_id": m.group(2),
+                    "enroll_seg": enroll_seg,
+                    "course_seg": course_seg,
+                    "module_seg": module_seg,
+                    "lesson_seg": lesson_seg,
+                    "attachments": attachments,
                 },
             })
 
         return lessons
+
+    def _extract_row_attachments(self, row: Any) -> List[Dict[str, str]]:
+        """Harvests the per-lesson download links present in the listing row.
+
+        Lessons expose up to four files (pdf, pdf2, pdf3, pdf4) under
+        /files/lesson/<type>/<lesson_id>/<filename>.
+        """
+        attachments: List[Dict[str, str]] = []
+        seen_urls: set = set()
+
+        for link in row.find_all("a", href=re.compile(r"/files/lesson/")):
+            href = link.get("href", "")
+            if not href:
+                continue
+            url = self._abs(href)
+            if url in seen_urls:
+                continue
+            seen_urls.add(url)
+
+            basename = unquote(urlparse(url).path.rsplit("/", 1)[-1])
+            label = link.get_text(strip=True)
+            filename = basename or (f"{label}.pdf" if label else "material.pdf")
+            extension = filename.rsplit(".", 1)[-1].lower() if "." in filename else "pdf"
+
+            attachments.append({
+                "url": url,
+                "filename": filename,
+                "extension": extension,
+                "label": label,
+            })
+
+        return attachments
 
     def _extract_page_title(self, html: str) -> str:
         soup = BeautifulSoup(html, "html.parser")
@@ -446,160 +414,81 @@ Assinantes ativos podem informar usuario/senha para login automatico.""".strip()
         if not self._session:
             raise ConnectionError("Sessao nao autenticada.")
 
-        lesson_id = lesson.get("id")
         extra = lesson.get("extra", {})
-        real_course_id = extra.get("course_id", course_id)
-        real_module_id = extra.get("module_id", module_id)
-
-        url = f"{BASE_URL}/virtual_rooms/disciplineplanvideoplayer/{real_course_id}/{real_module_id}/{lesson_id}"
-        resp = self._session.get(url, timeout=30, allow_redirects=True)
-        resp.raise_for_status()
-        html = resp.text
+        enroll_seg = extra.get("enroll_seg")
+        course_seg = extra.get("course_seg")
+        module_seg = extra.get("module_seg")
+        lesson_seg = extra.get("lesson_seg")
 
         content = LessonContent()
-        soup = BeautifulSoup(html, "html.parser")
 
-        desc_el = soup.find("div", class_=re.compile(r"descricao|description|conteudo-aula|lesson-content"))
-        if desc_el:
-            text = desc_el.get_text(strip=True)
-            if text:
-                content.description = Description(text=text, description_type="text")
+        if enroll_seg and course_seg and module_seg and lesson_seg:
+            url = (
+                f"{BASE_URL}/sala-virtual/meu-curso/disciplina/aula/"
+                f"{enroll_seg}/{course_seg}/{module_seg}/{lesson_seg}"
+            )
+            resp = self._session.get(url, timeout=30, allow_redirects=True)
+            resp.raise_for_status()
+            soup = BeautifulSoup(resp.text, "html.parser")
+            self._extract_video(soup, content, lesson, url)
+        else:
+            logger.warning(
+                "MatematicaPraPassar: lesson %s missing URL segments, skipping video",
+                lesson.get("id"),
+            )
 
-        self._extract_pandavideo(soup, content, lesson, url)
-
-        if not content.videos:
-            self._extract_generic_iframes(soup, content, lesson, url)
-
-        self._extract_attachments(soup, content)
+        self._attach_listing_attachments(content, extra.get("attachments", []))
 
         return content
 
-    def _extract_pandavideo(
+    def _extract_video(
         self, soup: BeautifulSoup, content: LessonContent, lesson: Dict[str, Any], page_url: str
     ) -> None:
-        for iframe in soup.find_all("iframe", src=True):
-            src = iframe.get("src", "")
-            if "pandavideo" in src:
-                panda_match = re.search(r"[?&]v=([a-f0-9-]+)", src)
-                video_id = panda_match.group(1) if panda_match else str(lesson.get("id", ""))
-                content.videos.append(
-                    Video(
-                        video_id=video_id,
-                        url=src,
-                        order=lesson.get("order", 1),
-                        title=lesson.get("title", "Aula"),
-                        size=0,
-                        duration=0,
-                        extra_props={"referer": page_url},
-                    )
-                )
-                return
+        """Extracts the lesson video. Scoped to the player container so the
+        promotional YouTube iframe in the page footer is never picked up."""
+        container = soup.find("div", class_="video-container") or soup.find(
+            "div", class_=re.compile(r"box-vimeo-player")
+        )
+        search_root = container if container else soup
 
-        video_div = soup.find("div", class_=re.compile(r"video-panda|pandavideo"))
-        if video_div:
-            iframe = video_div.find("iframe")
-            if iframe and iframe.get("src"):
-                src = iframe.get("src", "")
-                panda_match = re.search(r"[?&]v=([a-f0-9-]+)", src)
-                video_id = panda_match.group(1) if panda_match else video_div.get("data-id", str(lesson.get("id", "")))
-                content.videos.append(
-                    Video(
-                        video_id=video_id,
-                        url=src,
-                        order=lesson.get("order", 1),
-                        title=lesson.get("title", "Aula"),
-                        size=0,
-                        duration=0,
-                        extra_props={"referer": page_url},
-                    )
-                )
+        iframe = search_root.find("iframe", src=re.compile(r"pandavideo"))
+        if not iframe and container:
+            iframe = container.find("iframe", src=True)
 
-    def _extract_generic_iframes(
-        self, soup: BeautifulSoup, content: LessonContent, lesson: Dict[str, Any], page_url: str
+        if not iframe or not iframe.get("src"):
+            logger.warning("MatematicaPraPassar: no video found for lesson %s", lesson.get("id"))
+            return
+
+        src = iframe.get("src", "")
+        panda_match = re.search(r"[?&]v=([a-f0-9-]+)", src)
+        video_id = panda_match.group(1) if panda_match else str(lesson.get("id", ""))
+
+        content.videos.append(
+            Video(
+                video_id=video_id,
+                url=src,
+                order=lesson.get("order", 1),
+                title=lesson.get("title", "Aula"),
+                size=0,
+                duration=0,
+                extra_props={"referer": page_url},
+            )
+        )
+
+    def _attach_listing_attachments(
+        self, content: LessonContent, raw_attachments: List[Dict[str, str]]
     ) -> None:
-        for iframe in soup.find_all("iframe", src=True):
-            src = iframe.get("src", "")
-            if any(p in src for p in ("youtube", "youtu.be", "vimeo", "pandavideo", "player")):
-                vid_id = self._extract_video_id(src)
-                content.videos.append(
-                    Video(
-                        video_id=vid_id or str(lesson.get("id", "")),
-                        url=src,
-                        order=lesson.get("order", 1),
-                        title=lesson.get("title", "Aula"),
-                        size=0,
-                        duration=0,
-                        extra_props={"referer": page_url},
-                    )
-                )
-                break
-
-    @staticmethod
-    def _extract_video_id(url: str) -> str:
-        if "pandavideo" in url:
-            match = re.search(r"[?&]v=([a-f0-9-]+)", url)
-            if match:
-                return match.group(1)
-        if "youtube" in url or "youtu.be" in url:
-            match = re.search(r"(?:v=|youtu\.be/|embed/)([a-zA-Z0-9_-]+)", url)
-            if match:
-                return match.group(1)
-        if "vimeo" in url:
-            match = re.search(r"vimeo\.com/(?:video/)?(\d+)", url)
-            if match:
-                return match.group(1)
-        return ""
-
-    def _extract_attachments(self, soup: BeautifulSoup, content: LessonContent) -> None:
-        for idx, link in enumerate(
-            soup.find_all("a", href=re.compile(r"\.(pdf|doc|docx|xls|xlsx|ppt|pptx|zip|rar)", re.I)),
-            start=1,
-        ):
-            url = link.get("href", "")
+        for idx, att in enumerate(raw_attachments, start=1):
+            url = att.get("url")
             if not url:
                 continue
-
-            if not url.startswith("http"):
-                url = f"{BASE_URL}{url}"
-
-            filename = link.get_text(strip=True)
-            if not filename or len(filename) < 2:
-                filename = url.rsplit("/", 1)[-1]
-
-            extension = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-
             content.attachments.append(
                 Attachment(
                     attachment_id=str(idx),
                     url=url,
-                    filename=filename,
+                    filename=att.get("filename") or f"Anexo {idx}",
                     order=idx,
-                    extension=extension,
-                    size=0,
-                )
-            )
-
-        for idx_extra, link in enumerate(
-            soup.find_all("a", class_=re.compile(r"attach|download|material|anexo"), href=True),
-            start=len(content.attachments) + 1,
-        ):
-            url = link.get("href", "")
-            if not url or any(a.url == url for a in content.attachments):
-                continue
-
-            if not url.startswith("http"):
-                url = f"{BASE_URL}{url}"
-
-            filename = link.get_text(strip=True) or f"Anexo {idx_extra}"
-            extension = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-
-            content.attachments.append(
-                Attachment(
-                    attachment_id=str(idx_extra),
-                    url=url,
-                    filename=filename,
-                    order=idx_extra,
-                    extension=extension,
+                    extension=att.get("extension", ""),
                     size=0,
                 )
             )
@@ -620,7 +509,9 @@ Assinantes ativos podem informar usuario/senha para login automatico.""".strip()
             if not url:
                 return False
 
-            response = self._session.get(url, stream=True, timeout=120)
+            response = self._session.get(
+                url, stream=True, timeout=120, headers={"Referer": f"{BASE_URL}/"}
+            )
             response.raise_for_status()
 
             with open(download_path, "wb") as f:
@@ -641,4 +532,5 @@ Assinantes ativos podem informar usuario/senha para login automatico.""".strip()
         return href if href.startswith("http") else f"{BASE_URL}{href}"
 
 
+# PlatformFactory.register_platform("Matematica Pra Passar", MatematicaPraPassarPlatform, slug=INTEGRATION_SLUG, version=INTEGRATION_VERSION, experimental=INTEGRATION_EXPERIMENTAL)
 PlatformFactory.register_platform("Matematica Pra Passar", MatematicaPraPassarPlatform)
