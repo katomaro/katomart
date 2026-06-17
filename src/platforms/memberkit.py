@@ -16,7 +16,7 @@ from src.config.settings_manager import SettingsManager
 from src.platforms.base import AuthField, AuthFieldType, BasePlatform, PlatformFactory
 
 INTEGRATION_SLUG = "memberkit"
-INTEGRATION_VERSION = "1.0.0"
+INTEGRATION_VERSION = "1.1.0"
 INTEGRATION_EXPERIMENTAL = False
 
 logger = logging.getLogger(__name__)
