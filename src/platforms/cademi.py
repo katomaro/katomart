@@ -15,6 +15,10 @@ from src.app.models import Attachment, Description, LessonContent, Video
 from src.config.settings_manager import SettingsManager
 from src.platforms.base import AuthField, AuthFieldType, BasePlatform, PlatformFactory
 
+INTEGRATION_SLUG = "cademi"
+INTEGRATION_VERSION = "1.0.0"
+INTEGRATION_EXPERIMENTAL = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -786,13 +790,34 @@ Assinantes ativos podem informar usuario/senha para login automatico.
                     description_type="text",
                 )
 
-        video_div = soup.find("div", class_=re.compile(r"video-(pandavideo|vturb|vimeo|bunny|bunnystream|mediadelivery)"))
+        video_div = soup.find("div", class_=re.compile(r"video-(youtube|pandavideo|vturb|vimeo|bunny|bunnystream|mediadelivery)"))
         if video_div:
+            data_id = video_div.get("data-id", "")
+            classes = " ".join(video_div.get("class") or [])
             iframe = video_div.find("iframe")
-            if iframe and iframe.get("src"):
-                video_url = iframe.get("src")
-                data_id = video_div.get("data-id", "")
-                classes = " ".join(video_div.get("class") or [])
+            video_url = iframe.get("src", "") if iframe else ""
+
+            if "video-youtube" in classes or "youtube" in video_url or "youtu.be" in video_url:
+                # The <iframe> is injected client-side by CademiPlayer JS, so the
+                # raw server HTML can carry only <div class="video video-youtube"
+                # data-id="<youtube_id>"> with no iframe at all. Relying on the
+                # iframe src here (as the generic fallback below does) silently
+                # yields zero videos -> empty lesson folders. Resolve via data-id
+                # and hand yt-dlp the canonical watch URL, which it can download
+                # even when third-party embedding is disabled on the video.
+                yt_id = data_id or self._extract_video_id(video_url) or str(item_id)
+                content.videos.append(
+                    Video(
+                        video_id=yt_id,
+                        url=f"https://www.youtube.com/watch?v={yt_id}",
+                        order=lesson.get("order", 1),
+                        title=lesson.get("title", "Aula"),
+                        size=0,
+                        duration=0,
+                        extra_props={"referer": self._site_url + "/"},
+                    )
+                )
+            elif iframe and video_url:
                 if "mediadelivery.net" in video_url or "bunny" in classes:
                     bunny_id = self._extract_bunny_video_id(video_url) or data_id or str(item_id)
                     content.videos.append(
@@ -1219,4 +1244,5 @@ Assinantes ativos podem informar usuario/senha para login automatico.
             return False
 
 
+# PlatformFactory.register_platform("Cademi", CademiPlatform, slug=INTEGRATION_SLUG, version=INTEGRATION_VERSION, experimental=INTEGRATION_EXPERIMENTAL)
 PlatformFactory.register_platform("Cademi", CademiPlatform)
