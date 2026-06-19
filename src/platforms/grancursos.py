@@ -14,6 +14,10 @@ from src.app.models import Attachment, LessonContent, Video
 from src.config.settings_manager import SettingsManager
 from src.platforms.base import AuthField, AuthFieldType, BasePlatform, PlatformFactory
 
+INTEGRATION_SLUG = "grancursos"
+INTEGRATION_VERSION = "1.0.0"
+INTEGRATION_EXPERIMENTAL = False
+
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://www.grancursosonline.com.br"
@@ -161,21 +165,37 @@ Caso ele indique erros, perceba que o conteudo existe na pagina, eh apenas uma p
 
         logger.debug("Usuário autenticado: %s %s", data.get("nome"), data.get("sobrenome"))
 
-    def _get_contract_id(self) -> str:
-        """Gets the contract ID for the current user."""
+    def _get_contract_id(self) -> Optional[str]:
+        """Best-effort lookup of the subscription contract ID.
+
+        The contract id is only stored as course metadata — no download/lesson
+        endpoint actually consumes it. The value is only exposed by the
+        *assinatura* search (`buscar-cursos` -> top-level ``contrato``), which is
+        empty for users who own a course individually (Curso Avulso) without an
+        active subscription. Previously this raised, aborting the entire
+        download for avulso buyers. Now it degrades gracefully: returns ``None``
+        when no contract exists and never blocks the flow.
+        """
         if self._contract_id:
             return self._contract_id
 
         if not self._session:
             raise ConnectionError("Sessão não autenticada.")
 
-        response = self._session.get(f"{SEARCH_COURSES_URL}?q=&page=1&limit=1")
-        response.raise_for_status()
+        try:
+            response = self._session.get(f"{SEARCH_COURSES_URL}?q=&page=1&limit=1")
+            response.raise_for_status()
+            contract_id = response.json().get("contrato")
+        except Exception as exc:
+            logger.debug("Falha ao consultar contrato de assinatura: %s", exc)
+            contract_id = None
 
-        data = response.json()
-        contract_id = data.get("contrato")
         if not contract_id:
-            raise ValueError("Não foi possível obter o ID do contrato.")
+            logger.info(
+                "Nenhum contrato de assinatura encontrado (provável Curso Avulso); "
+                "prosseguindo sem ID de contrato."
+            )
+            return None
 
         self._contract_id = contract_id
         return contract_id
@@ -729,4 +749,5 @@ Caso ele indique erros, perceba que o conteudo existe na pagina, eh apenas uma p
             return False
 
 
+# PlatformFactory.register_platform("Gran Cursos Online", GranCursosPlatform, slug=INTEGRATION_SLUG, version=INTEGRATION_VERSION, experimental=INTEGRATION_EXPERIMENTAL)
 PlatformFactory.register_platform("Gran Cursos Online", GranCursosPlatform)
