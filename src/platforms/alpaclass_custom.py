@@ -15,6 +15,10 @@ from src.app.models import LessonContent, Description, AuxiliaryURL, Video, Atta
 from src.config.settings_manager import SettingsManager
 from src.app.api_service import ApiService
 
+INTEGRATION_SLUG = "alpaclass-custom"
+INTEGRATION_VERSION = "1.0.0"
+INTEGRATION_EXPERIMENTAL = False
+
 logger = logging.getLogger(__name__)
 
 API_BASE = "https://learner-api.alpaclass.com"
@@ -262,32 +266,29 @@ Para obter o token:
             )
         )
 
+        # Known content types whose 'data' holds a directly usable video URL.
+        # 'vimeo_youtube' = YouTube/Vimeo embed (routed to yt-dlp by DownloaderFactory).
+        KNOWN_VIDEO_TYPES = {"pandavideo", "safevideo_video", "vimeo_youtube"}
+
         lesson_content = details_data.get("content", {})
         if lesson_content and isinstance(lesson_content, dict):
             content_type = lesson_content.get("type", "")
+            video_url = lesson_content.get("data")
 
-            if content_type == "pandavideo":
-                video_url = lesson_content.get("data")
-                if video_url:
-                    content.videos.append(Video(
-                        video_id=lesson_slug,
-                        url=video_url,
-                        title=details_data.get("title") or details_data.get("name") or "Aula",
-                        order=1,
-                        size=0,
-                        duration=0
-                    ))
-            elif content_type == "safevideo_video":
-                video_url = lesson_content.get("data")
-                if video_url:
-                    content.videos.append(Video(
-                        video_id=lesson_slug,
-                        url=video_url,
-                        title=details_data.get("title") or details_data.get("name") or "Aula",
-                        order=1,
-                        size=0,
-                        duration=0
-                    ))
+            # Extract when it's a known video type OR when 'data' looks like an http
+            # URL (generic fallback so new platform content types still get captured;
+            # DownloaderFactory picks the right downloader by URL host, defaulting to yt-dlp).
+            if video_url and isinstance(video_url, str) and (
+                content_type in KNOWN_VIDEO_TYPES or video_url.startswith("http")
+            ):
+                content.videos.append(Video(
+                    video_id=lesson_slug,
+                    url=video_url,
+                    title=details_data.get("title") or details_data.get("name") or "Aula",
+                    order=1,
+                    size=0,
+                    duration=0
+                ))
             elif content_type:
                 logger.warning(f"Unsupported content type '{content_type}' for lesson {lesson_slug}. Skipping video extraction.")
 
@@ -373,4 +374,5 @@ Para obter o token:
             logger.error(f"Error marking lesson {lesson_slug}: {e}")
 
 
-PlatformFactory.register_platform('AlpaClass Domínio Customizado', AlpaclassPlatform)
+# PlatformFactory.register_platform("AlpaClass Domínio Customizado", AlpaclassPlatform, slug=INTEGRATION_SLUG, version=INTEGRATION_VERSION, experimental=INTEGRATION_EXPERIMENTAL)
+PlatformFactory.register_platform("AlpaClass Domínio Customizado", AlpaclassPlatform)
