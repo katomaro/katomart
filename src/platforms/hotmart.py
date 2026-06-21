@@ -1,6 +1,8 @@
 from typing import Any, Dict, List, Optional
 from pathlib import Path
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import logging
 import json
 import re
@@ -121,6 +123,16 @@ Para usuários gratuitos: Como obter o token da Hotmart?:
 
     def _configure_session(self, token: str) -> None:
         self._session = requests.Session()
+        retry_strategy = Retry(
+            total=3,
+            backoff_factor=2,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET", "POST"],
+            raise_on_status=False,
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        self._session.mount("https://", adapter)
+        self._session.mount("http://", adapter)
         self._session.headers.update({
             "Authorization": f"Bearer {token}",
             "User-Agent": self._settings.user_agent,

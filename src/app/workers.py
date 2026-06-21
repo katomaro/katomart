@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import queue
+import random
 import re
 import subprocess
 import threading
@@ -20,6 +21,7 @@ from urllib.parse import urlparse
 from src.platforms.base import BasePlatform
 from src.config.settings_manager import SettingsManager
 from src.downloaders.factory import DownloaderFactory
+from src.downloaders.errors import PermanentDownloadError
 from src.utils.resume_manager import ResumeManager
 from src.utils.history_manager import HistoryManager
 from src.app.models import ItemDownloadResult, LessonDownloadReport
@@ -337,11 +339,42 @@ class DownloadWorker(QRunnable):
                 if treat_false_as_failure and result is False:
                     raise RuntimeError(f"{description} retornou status de falha.")
                 return result
+            except PermanentDownloadError as e:
+                # Why: a permanent failure (404, unsupported/non-video URL, DRM,
+                # dead invite link) will never succeed on retry. Fail fast so we
+                # don't burn the exponential-backoff budget on a lost cause.
+                logging.error(
+                    f"{description} falhou permanentemente (sem retentativa): {e}"
+                )
+                raise
             except requests.exceptions.HTTPError as e:
+                status_code = e.response.status_code if e.response is not None else None
+
+                # Why: a 4xx client error (except 429 rate-limit) is permanent.
+                # The 400/401 case is left for the re-auth path below when
+                # auto_reauth_on_error is enabled; everything else fails fast.
+                is_retryable_status = status_code == 429 or (
+                    status_code is not None and 500 <= status_code < 600
+                )
+                is_reauth_candidate = (
+                    getattr(self.settings, "auto_reauth_on_error", False)
+                    and status_code in (400, 401)
+                )
+                if (
+                    status_code is not None
+                    and 400 <= status_code < 500
+                    and not is_retryable_status
+                    and not is_reauth_candidate
+                ):
+                    logging.error(
+                        f"{description} falhou com erro HTTP {status_code} permanente "
+                        f"(sem retentativa): {e}"
+                    )
+                    raise
+
                 is_last_attempt = attempt >= self._retry_attempts
 
                 if is_last_attempt:
-                    status_code = e.response.status_code if e.response is not None else None
                     if getattr(self.settings, "auto_reauth_on_error", False) and status_code in (400, 401):
                         logging.warning(
                             f"{description}: Erro {status_code} apos esgotar tentativas. "
@@ -370,12 +403,15 @@ class DownloadWorker(QRunnable):
                     )
                     raise
 
+                backoff = self._retry_delay_seconds * (2 ** attempt)
+                jitter = random.uniform(0, backoff * 0.3)
+                wait_time = backoff + jitter
                 next_attempt = attempt + 2
                 logging.warning(
                     f"{description} falhou (tentativa {next_attempt} de {total_attempts}). "
-                    f"Nova tentativa em {self._retry_delay_seconds}s. Erro: {e}"
+                    f"Nova tentativa em {wait_time:.1f}s. Erro: {e}"
                 )
-                time.sleep(self._retry_delay_seconds)
+                time.sleep(wait_time)
 
             except Exception as exc:  # pragma: no cover - operational retry logic
                 is_last_attempt = attempt >= self._retry_attempts
@@ -386,12 +422,15 @@ class DownloadWorker(QRunnable):
                     )
                     raise
 
+                backoff = self._retry_delay_seconds * (2 ** attempt)
+                jitter = random.uniform(0, backoff * 0.3)
+                wait_time = backoff + jitter
                 next_attempt = attempt + 2
                 logging.warning(
                     f"{description} falhou (tentativa {next_attempt} de {total_attempts}). "
-                    f"Nova tentativa em {self._retry_delay_seconds}s. Erro: {exc}"
+                    f"Nova tentativa em {wait_time:.1f}s. Erro: {exc}"
                 )
-                time.sleep(self._retry_delay_seconds)
+                time.sleep(wait_time)
 
     def _build_request_context(self, session: requests.Session) -> Dict[str, Any]:
         return {
@@ -665,6 +704,8 @@ class DownloadWorker(QRunnable):
     def _classify_error(exc: Exception) -> tuple:
         """Return (error_type, error_message) from an exception."""
         msg = str(exc)[:200]
+        if isinstance(exc, PermanentDownloadError):
+            return "Falha permanente (link morto/sem video)", msg
         if isinstance(exc, requests.exceptions.HTTPError):
             status_code = exc.response.status_code if exc.response is not None else "?"
             return f"HTTP {status_code}", msg
