@@ -34,6 +34,13 @@ class DownloaderFactory:
         if extra_props.get("is_encrypted") and extra_props.get("media_license_token"):
             return UdemyDownloader(settings_manager)
 
+        # Udemy non-DRM media (HLS) is served from authenticated, Cloudflare-fronted
+        # udemy hosts. The generic yt-dlp path 403s (wrong headers + the udemy:course
+        # extractor hijacks the URL); UdemyDownloader._download_regular_video forwards
+        # only browser-style headers and forces the generic extractor.
+        if "udemy.com" in url or "udemycdn.com" in url:
+            return UdemyDownloader(settings_manager)
+
         if "youtube.com" in url or "youtu.be" in url or "vimeo.com" in url:
             return YtdlpDownloader(settings_manager)
         elif "cf-embed.play.hotmart.com" in url:

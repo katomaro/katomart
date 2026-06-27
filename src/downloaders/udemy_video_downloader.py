@@ -418,8 +418,29 @@ class UdemyDownloader(BaseDownloader):
             'no_warnings': True,
             'progress': True,
             'concurrent_fragment_downloads': max(1, self.settings.max_concurrent_segment_downloads),
+            # The HLS master for non-DRM lectures is served from www.udemy.com,
+            # which (a) matches yt-dlp's udemy:course extractor by URL pattern and
+            # (b) sits behind Cloudflare. Force the generic extractor so the direct
+            # m3u8 is handled.
+            'force_generic_extractor': True,
             **retry_opts,
         }
+
+        # Impersonate a browser (curl_cffi) for ALL requests so Cloudflare's WAF
+        # accepts them like the API session does. The top-level `impersonate`
+        # option switches the network handler globally; the `generic:impersonate`
+        # extractor-arg does NOT cover the m3u8/segment sub-requests, which is why
+        # those still 403'd through yt-dlp's default requests handler.
+        # Pin chrome-120 to match the platform's curl_cffi session
+        # (impersonate="chrome120"): same TLS fingerprint => the Cloudflare
+        # clearance the session already obtained is honored. Bare 'chrome'
+        # resolves to an Android profile (mismatched UA) and can be re-challenged.
+        try:
+            from yt_dlp.networking.impersonate import ImpersonateTarget
+            ydl_opts['impersonate'] = ImpersonateTarget('chrome', '120')
+        except Exception as e:
+            logging.warning(f"yt-dlp impersonate indisponível ({e}); usando extractor_args como fallback.")
+            ydl_opts['extractor_args'] = {'generic': {'impersonate': ['chrome-120']}}
 
         ydl_opts.update(self.build_quality_opts(self.settings))
 

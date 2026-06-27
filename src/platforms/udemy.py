@@ -1,7 +1,6 @@
 from typing import Any, Dict, List, Optional
 import logging
 import asyncio
-import random
 import time
 import json
 import re
@@ -15,6 +14,10 @@ from src.platforms.playwright_token_fetcher import PlaywrightTokenFetcher
 from src.app.models import LessonContent, Attachment, Video
 from src.app.api_service import ApiService
 from src.config.settings_manager import SettingsManager
+
+INTEGRATION_SLUG = "udemy"
+INTEGRATION_VERSION = "1.0.0"
+INTEGRATION_EXPERIMENTAL = False
 
 
 class UdemyTokenFetcher(PlaywrightTokenFetcher):
@@ -173,8 +176,6 @@ class UdemyTokenFetcher(PlaywrightTokenFetcher):
 
 
 class UdemyPlatform(BasePlatform):
-    ASSETS_FIELDS = "asset_type,title,filename,body,captions,media_sources,stream_urls,download_urls,external_url,media_license_token"
-
     def __init__(self, api_service: ApiService, settings_manager: SettingsManager):
         super().__init__(api_service, settings_manager)
         self._token_fetcher = UdemyTokenFetcher()
@@ -362,36 +363,66 @@ AVISO: Nas configurações utilize delay de acesso nas aulas para evitar que a u
         if not self._session:
             raise ConnectionError("A sessão não foi autenticada.")
 
-        url = "https://www.udemy.com/api-2.0/users/me/subscribed-courses/"
-        params = {
-            "ordering": "-last_accessed",
-            "fields[course]": "id,title,url,image_480x270",
-            "page": 1,
-            "page_size": 100,
-            "is_archived": False
-        }
+        all_courses: List[Dict[str, Any]] = []
+        seen_ids: set = set()
 
-        all_courses = []
+        # Cursos comprados isoladamente.
+        self._collect_courses(
+            "https://www.udemy.com/api-2.0/users/me/subscribed-courses/",
+            {
+                "ordering": "-last_accessed",
+                "fields[course]": "id,title,url,image_480x270",
+                "page": 1,
+                "page_size": 100,
+                "is_archived": False,
+            },
+            all_courses,
+            seen_ids,
+        )
+
+        # Cursos do plano Premium / Personal Plan (matrícula por assinatura).
+        # Estes NÃO aparecem em subscribed-courses; só neste endpoint.
+        try:
+            self._collect_courses(
+                "https://www.udemy.com/api-2.0/users/me/subscription-course-enrollments/",
+                {
+                    "ordering": "-last_accessed",
+                    "fields[course]": "id,title,url,image_480x270",
+                    "page": 1,
+                    "page_size": 100,
+                },
+                all_courses,
+                seen_ids,
+            )
+        except Exception as e:
+            logging.warning(f"Udemy: não foi possível listar cursos do plano Premium: {e}")
+
+        return all_courses
+
+    def _collect_courses(self, url: str, params: Dict[str, Any], out: List[Dict[str, Any]], seen_ids: set) -> None:
+        """Pagina um endpoint de listagem de cursos e acumula em ``out`` (dedup por id)."""
+        first = True
         while url:
-            is_initial = "api-2.0/users/me/subscribed-courses/" in url and "page=" not in url
-            p = params if is_initial else None
-
-            resp = self._session.get(url, params=p)
+            resp = self._session.get(url, params=params if first else None)
             resp.raise_for_status()
             data = resp.json()
 
             for result in data.get("results", []):
-                all_courses.append({
-                    "id": str(result.get("id")),
+                course_id = str(result.get("id"))
+                if not course_id or course_id in seen_ids:
+                    continue
+                seen_ids.add(course_id)
+                course_url = result.get("url", "") or ""
+                out.append({
+                    "id": course_id,
                     "name": result.get("title"),
-                    "url": f"https://www.udemy.com{result.get('url')}",
+                    "url": f"https://www.udemy.com{course_url}",
                     "image": result.get("image_480x270"),
-                    "slug": result.get("url", "").strip("/").split("/")[-2] if result.get("url") else ""
+                    "slug": course_url.strip("/").split("/")[-2] if course_url else ""
                 })
 
             url = data.get("next")
-
-        return all_courses
+            first = False
 
     def fetch_course_content(self, courses: List[Dict[str, Any]]) -> Dict[str, Any]:
         all_content = {}
@@ -458,15 +489,25 @@ AVISO: Nas configurações utilize delay de acesso nas aulas para evitar que a u
         return all_content
 
     def _fetch_curriculum(self, course_id: str) -> List[Dict[str, Any]]:
-        url = f"https://www.udemy.com/api-2.0/courses/{course_id}/cached-subscriber-curriculum-items"
+        # Endpoint usado pelo próprio frontend da Udemy. O antigo
+        # ``cached-subscriber-curriculum-items`` pedindo media_sources/
+        # media_license_token em lote travava (especialmente em cursos do
+        # plano Premium) e era paginado com sleeps de 5-15s por página.
+        # Aqui pedimos campos leves, page_size grande (uma página só) e
+        # SEM tokens de mídia — estes são resolvidos por aula em fetch_lesson_details.
+        url = f"https://www.udemy.com/api-2.0/courses/{course_id}/subscriber-curriculum-items/"
         params = {
-            "page_size": 100,
-            "fields[lecture]": "id,title,asset,supplementary_assets",
-            "fields[chapter]": "id,title",
-            "fields[asset]": self.ASSETS_FIELDS,
+            "curriculum_types": "chapter,lecture,practice,quiz,role-play",
+            "page_size": 200,
+            "fields[lecture]": "title,object_index,is_published,sort_order,created,asset,supplementary_assets,is_free",
+            "fields[quiz]": "title,object_index,is_published,sort_order,type",
+            "fields[practice]": "title,object_index,is_published,sort_order",
+            "fields[chapter]": "title,object_index,is_published,sort_order",
+            "fields[asset]": "title,filename,asset_type,status,time_estimation,is_external",
+            "caching_intent": "True",
         }
 
-        items = []
+        items: List[Dict[str, Any]] = []
         current_url = url
         first_call = True
         retry_count = 0
@@ -474,11 +515,6 @@ AVISO: Nas configurações utilize delay de acesso nas aulas para evitar que a u
 
         while current_url:
             try:
-                if not first_call:
-                    pause = random.uniform(5, 15)
-                    logging.info(f"Aguardando {pause:.1f}s antes de buscar próxima página do currículo (curso {course_id})...")
-                    time.sleep(pause)
-
                 p = params if first_call else None
                 resp = self._session.get(current_url, params=p, timeout=60)
                 resp.raise_for_status()
@@ -497,35 +533,18 @@ AVISO: Nas configurações utilize delay de acesso nas aulas para evitar que a u
                 error_str = str(e).lower()
                 status = getattr(getattr(e, 'response', None), 'status_code', 0)
 
-                if status == 503:
-                    logging.warning(f"Cached endpoint returned 503, falling back for course {course_id}")
-                    return self._fetch_curriculum_fallback(course_id)
-
                 if "timeout" in error_str or "timed out" in error_str:
                     retry_count += 1
                     if retry_count <= max_retries:
                         logging.warning(f"Timeout fetching curriculum, retry {retry_count}/{max_retries}")
-                        import time
                         time.sleep(2 * retry_count)
                         continue
-                    else:
-                        logging.error(f"Max retries reached for curriculum fetch")
-                        raise
-
-                if "HTTPError" in type(e).__name__ or status > 0:
+                    logging.error("Max retries reached for curriculum fetch")
                     raise
 
-        return items
+                raise
 
-    def _fetch_curriculum_fallback(self, course_id: str) -> List[Dict[str, Any]]:
-        url = f"https://www.udemy.com/api-2.0/courses/{course_id}/cached-subscriber-curriculum-items"
-        params = {
-            "page_size": 1000,
-            "fields[lecture]": "id,title,asset",
-        }
-        resp = self._session.get(url, params=params, timeout=120)
-        resp.raise_for_status()
-        return resp.json().get("results", [])
+        return items
 
     def fetch_lesson_details(self, lesson: Dict[str, Any], course_slug: str, course_id: str, module_id: str) -> LessonContent:
         content = LessonContent()
@@ -555,6 +574,34 @@ AVISO: Nas configurações utilize delay de acesso nas aulas para evitar que a u
             if asset_type in ("video", "videomashup"):
                 video_url, is_encrypted, mpd_url = self._extract_video_url(asset)
                 media_license_token = asset.get("media_license_token")
+
+                # Diagnóstico (somente local): registra de onde sai a URL do vídeo.
+                # Se um vídeo cai no yt-dlp genérico e leva 403 com extractor
+                # [udemy:course], a URL escolhida está num host autenticado
+                # (ex.: www.udemy.com/assets/...) em vez de um CDN.
+                try:
+                    def _host(u: Optional[str]) -> str:
+                        if not u:
+                            return "-"
+                        from urllib.parse import urlparse
+                        return urlparse(u).netloc or u[:40]
+
+                    ms = asset.get("media_sources") or []
+                    su = asset.get("stream_urls") or {}
+                    logging.debug(
+                        "Udemy diag lecture %s: drmed=%s license=%s media_sources=%s "
+                        "stream_urls_keys=%s -> chosen_url_host=%s is_encrypted=%s mpd_host=%s",
+                        lesson_id,
+                        asset.get("course_is_drmed"),
+                        bool(media_license_token),
+                        [(s.get("type"), _host(s.get("src") or s.get("file"))) for s in ms],
+                        list(su.keys()) if isinstance(su, dict) else type(su).__name__,
+                        _host(video_url),
+                        is_encrypted,
+                        _host(mpd_url),
+                    )
+                except Exception:
+                    pass
 
                 extra_props = {
                     "is_encrypted": is_encrypted,
@@ -711,4 +758,5 @@ AVISO: Nas configurações utilize delay de acesso nas aulas para evitar que a u
             return False
 
 
+# PlatformFactory.register_platform("Udemy", UdemyPlatform, slug=INTEGRATION_SLUG, version=INTEGRATION_VERSION, experimental=INTEGRATION_EXPERIMENTAL)
 PlatformFactory.register_platform("Udemy", UdemyPlatform)
