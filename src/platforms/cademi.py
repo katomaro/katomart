@@ -790,97 +790,21 @@ Assinantes ativos podem informar usuario/senha para login automatico.
                     description_type="text",
                 )
 
-        video_div = soup.find("div", class_=re.compile(r"video-(youtube|pandavideo|vturb|vimeo|bunny|bunnystream|mediadelivery)"))
-        if video_div:
-            data_id = video_div.get("data-id", "")
-            classes = " ".join(video_div.get("class") or [])
-            iframe = video_div.find("iframe")
-            video_url = iframe.get("src", "") if iframe else ""
+        # A single Cademi lesson can stack several content blocks side by side
+        # ("layout paralelo"): e.g. a YouTube player AND a vturb player, or a
+        # video AND an embedded ebook. Each video lives in its own
+        # <div class="video video-<provider>">, so we must iterate over *all* of
+        # them — `soup.find` (the old behaviour) grabbed only the first block and
+        # silently dropped every other player on the page.
+        video_divs = soup.find_all(
+            "div", class_=re.compile(r"video-(youtube|pandavideo|vturb|vimeo|bunny|bunnystream|mediadelivery)")
+        )
+        for video_div in video_divs:
+            video = self._video_from_div(video_div, lesson, item_id, len(content.videos) + 1)
+            if video:
+                content.videos.append(video)
 
-            if "video-youtube" in classes or "youtube" in video_url or "youtu.be" in video_url:
-                # The <iframe> is injected client-side by CademiPlayer JS, so the
-                # raw server HTML can carry only <div class="video video-youtube"
-                # data-id="<youtube_id>"> with no iframe at all. Relying on the
-                # iframe src here (as the generic fallback below does) silently
-                # yields zero videos -> empty lesson folders. Resolve via data-id
-                # and hand yt-dlp the canonical watch URL, which it can download
-                # even when third-party embedding is disabled on the video.
-                yt_id = data_id or self._extract_video_id(video_url) or str(item_id)
-                content.videos.append(
-                    Video(
-                        video_id=yt_id,
-                        url=f"https://www.youtube.com/watch?v={yt_id}",
-                        order=lesson.get("order", 1),
-                        title=lesson.get("title", "Aula"),
-                        size=0,
-                        duration=0,
-                        extra_props={"referer": self._site_url + "/"},
-                    )
-                )
-            elif iframe and video_url:
-                if "mediadelivery.net" in video_url or "bunny" in classes:
-                    bunny_id = self._extract_bunny_video_id(video_url) or data_id or str(item_id)
-                    content.videos.append(
-                        Video(
-                            video_id=bunny_id,
-                            url=video_url,
-                            order=lesson.get("order", 1),
-                            title=lesson.get("title", "Aula"),
-                            size=0,
-                            duration=0,
-                            extra_props={"referer": self._site_url + "/"},
-                        )
-                    )
-                elif "video-vturb" in classes or "converteai" in video_url:
-                    resolved = self._resolve_vturb_video(video_url)
-                    if resolved:
-                        hls_url, vturb_video_id = resolved
-                        content.videos.append(
-                            Video(
-                                video_id=vturb_video_id or data_id or str(item_id),
-                                url=hls_url,
-                                order=lesson.get("order", 1),
-                                title=lesson.get("title", "Aula"),
-                                size=0,
-                                duration=0,
-                                extra_props={"referer": self._site_url + "/"},
-                            )
-                        )
-                    else:
-                        logger.warning(
-                            "Cademi: vturb video %s could not be resolved to HLS", video_url
-                        )
-                elif "video-vimeo" in classes or "vimeo.com" in video_url:
-                    resolved = self._resolve_vimeo_video(video_url, hint_video_id=data_id)
-                    if resolved:
-                        hls_url, vimeo_video_id = resolved
-                        content.videos.append(
-                            Video(
-                                video_id=vimeo_video_id or data_id or str(item_id),
-                                url=hls_url,
-                                order=lesson.get("order", 1),
-                                title=lesson.get("title", "Aula"),
-                                size=0,
-                                duration=0,
-                                extra_props={"referer": self._site_url + "/"},
-                            )
-                        )
-                    else:
-                        logger.warning(
-                            "Cademi: vimeo video %s could not be resolved to HLS", video_url
-                        )
-                else:
-                    content.videos.append(
-                        Video(
-                            video_id=data_id or str(item_id),
-                            url=video_url,
-                            order=lesson.get("order", 1),
-                            title=lesson.get("title", "Aula"),
-                            size=0,
-                            duration=0,
-                            extra_props={"referer": self._site_url + "/"},
-                        )
-                    )
+        self._append_ebook_attachments(soup, content, lesson)
 
         if not content.videos:
             for iframe in soup.find_all("iframe", src=True):
@@ -951,7 +875,8 @@ Assinantes ativos podem informar usuario/senha para login automatico.
                     break
 
         for idx, attach_link in enumerate(
-            soup.find_all("a", class_="article-attach", href=True), start=1
+            soup.find_all("a", class_="article-attach", href=True),
+            start=len(content.attachments) + 1,
         ):
             url = attach_link.get("href", "")
             if not url:
@@ -973,6 +898,122 @@ Assinantes ativos podem informar usuario/senha para login automatico.
             )
 
         return content
+
+    def _video_from_div(
+        self, video_div: Any, lesson: Dict[str, Any], item_id: Any, order: int
+    ) -> Optional[Video]:
+        """Builds a Video from a single `<div class="video video-<provider>">`.
+
+        Extracted from fetch_lesson_details so the caller can iterate over every
+        player on a parallel-layout lesson instead of only the first one. Returns
+        None when the block is a provider we resolve to HLS but resolution fails.
+        """
+        data_id = video_div.get("data-id", "")
+        classes = " ".join(video_div.get("class") or [])
+        iframe = video_div.find("iframe")
+        video_url = iframe.get("src", "") if iframe else ""
+        title = lesson.get("title", "Aula")
+        extra = {"referer": self._site_url + "/"}
+
+        if "video-youtube" in classes or "youtube" in video_url or "youtu.be" in video_url:
+            # The <iframe> is injected client-side by CademiPlayer JS, so the
+            # raw server HTML can carry only <div class="video video-youtube"
+            # data-id="<youtube_id>"> with no iframe at all. Relying on the
+            # iframe src here (as the generic fallback below does) silently
+            # yields zero videos -> empty lesson folders. Resolve via data-id
+            # and hand yt-dlp the canonical watch URL, which it can download
+            # even when third-party embedding is disabled on the video.
+            yt_id = data_id or self._extract_video_id(video_url) or str(item_id)
+            return Video(
+                video_id=yt_id,
+                url=f"https://www.youtube.com/watch?v={yt_id}",
+                order=order, title=title, size=0, duration=0, extra_props=extra,
+            )
+
+        if not (iframe and video_url):
+            return None
+
+        if "mediadelivery.net" in video_url or "bunny" in classes:
+            bunny_id = self._extract_bunny_video_id(video_url) or data_id or str(item_id)
+            return Video(
+                video_id=bunny_id, url=video_url,
+                order=order, title=title, size=0, duration=0, extra_props=extra,
+            )
+
+        if "video-vturb" in classes or "converteai" in video_url:
+            resolved = self._resolve_vturb_video(video_url)
+            if resolved:
+                hls_url, vturb_video_id = resolved
+                return Video(
+                    video_id=vturb_video_id or data_id or str(item_id), url=hls_url,
+                    order=order, title=title, size=0, duration=0, extra_props=extra,
+                )
+            logger.warning("Cademi: vturb video %s could not be resolved to HLS", video_url)
+            return None
+
+        if "video-vimeo" in classes or "vimeo.com" in video_url:
+            resolved = self._resolve_vimeo_video(video_url, hint_video_id=data_id)
+            if resolved:
+                hls_url, vimeo_video_id = resolved
+                return Video(
+                    video_id=vimeo_video_id or data_id or str(item_id), url=hls_url,
+                    order=order, title=title, size=0, duration=0, extra_props=extra,
+                )
+            logger.warning("Cademi: vimeo video %s could not be resolved to HLS", video_url)
+            return None
+
+        return Video(
+            video_id=data_id or str(item_id), url=video_url,
+            order=order, title=title, size=0, duration=0, extra_props=extra,
+        )
+
+    # Google Drive sharing/preview links can appear as
+    #   /file/d/<id>/preview, /open?id=<id>, /uc?id=<id>, ?id=<id>
+    _DRIVE_FILE_ID = re.compile(
+        r"(?:/file/d/|/d/|[?&](?:src)?id=)([a-zA-Z0-9_-]{20,})"
+    )
+
+    def _append_ebook_attachments(
+        self, soup: BeautifulSoup, content: LessonContent, lesson: Dict[str, Any]
+    ) -> None:
+        """Captures ebook blocks embedded as Google Drive documents.
+
+        Cademi renders ebooks in a parallel block next to the video. When the
+        ebook is a Google Drive file, the lesson page exposes an iframe/link to
+        drive.google.com (preview viewer). The old parser only looked at iframes
+        when *no* video was found, so on a video+ebook lesson the ebook was
+        dropped. We collect the Drive file id and emit a direct-download URL.
+        """
+        seen: set = set()
+        candidates: List[str] = []
+        for tag in soup.find_all(["iframe", "a", "embed", "object"]):
+            for attr in ("src", "href", "data-src", "data"):
+                val = tag.get(attr)
+                if val and ("drive.google.com" in val or "docs.google.com" in val):
+                    candidates.append(val)
+
+        base_title = lesson.get("title", "Ebook").strip() or "Ebook"
+        for url in candidates:
+            match = self._DRIVE_FILE_ID.search(url)
+            if not match:
+                continue
+            file_id = match.group(1)
+            if file_id in seen:
+                continue
+            seen.add(file_id)
+
+            order = len(content.attachments) + 1
+            filename = f"{base_title}.pdf" if len(seen) == 1 else f"{base_title} ({len(seen)}).pdf"
+            content.attachments.append(
+                Attachment(
+                    attachment_id=f"ebook-{file_id}",
+                    url=f"https://drive.google.com/uc?export=download&id={file_id}",
+                    filename=filename,
+                    order=order,
+                    extension="pdf",
+                    size=0,
+                )
+            )
 
     @staticmethod
     def _extract_bunny_video_id(url: str) -> str:
